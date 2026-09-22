@@ -1,0 +1,4 @@
+task: https://www.kaggle.com/competitions/rsna-knee-abnormality-detection
+
+
+we nee to complete this project, win or loss should not affect our quality of work.
