@@ -41,10 +41,14 @@ TEAR = (
     r"|dechirure|fissuration"
     r"|scheur|ruptuur"
     r"|yirtik|rupturu|yirtilma"
-    r"|разрыв|повреждени|надрыв)"
+    r"|разрыв|повреждени|надрыв"
+    r"|ρηξ\w*|ρηγμα|διατομ\w*)"
 )
 
-DEGEN = r"(degener|maceration|mucoid|intrasubstance|degenerativ|degenerac)"
+DEGEN = (
+    r"(degener|maceration|mucoid|intrasubstance|degenerativ|degenerac"
+    r"|dejenerasyon|εκφυλ\w*)"
+)
 
 # Negation cues; searched in the text immediately preceding a match.
 #
@@ -68,16 +72,51 @@ NEGATION = (
 NEG_WINDOW = 60
 FIND_WINDOW = 90
 
+# Degenerative / cartilage findings. Gold PF-OA cases are frequently written as a
+# chondral defect rather than the word "arthrosis", so cartilage vocabulary has to
+# count. "(?<!sub)" keeps "subchondral" (e.g. subchondral fracture oedema) from
+# firing, since that is not itself a degenerative finding.
 _OA = (
     r"(osteoarthritis|osteoarthrosis|arthrosis|arthrose|artrosis|artrose|artrosi"
-    r"|gonarthrose|gonartrosis|degenerative joint|chondropath|chondromalac"
-    r"|cartilage loss|joint space narrowing|osteofit|osteophyt|osteofito"
-    r"|artroz|остеоартр|артроз|хондромаляц)"
+    r"|gonarthrose|gonartrosis|gonartroz|degenerative joint|joint space narrowing"
+    r"|chondropath|chondromalac|condropat|condromalac|chondrosis|condrosis"
+    r"|(?<!sub)chondral|(?<!sub)condral|cartilage loss|cartilage defect"
+    r"|cartilage thinning|chondral ulcer|ulcera condral|perdida de cartilago"
+    r"|adelgazamiento del cartilago|desgaste del cartilago"
+    r"|knorpelschaden|knorpeldefekt|knorpelverschmaelerung|knorpelglatze"
+    r"|kraakbeen|kikirdak kayb|kikirdak incelme"
+    r"|osteofit|osteophyt|osteofito|osteofiet"
+    r"|artroz|остеоартр|артроз|хондромаляц|хондральн|остеофит|истончение хряща"
+    r"|αρθριτιδ|αρθρωσ|χονδροπαθ|χονδρομαλακ|χονδρ|οστεοφυτ|αποψιλωσ)"
 )
 
+# Compartment anchors. Specific phrases first, bare side words as a fallback --
+# the OA term must co-occur in the same clause, which keeps bare "medial" from
+# firing on e.g. "medial meniscus tear".
 _SIDE = {
-    "medial": r"(medial|interno|interne|innen|mediale|медиальн|внутренн)",
-    "lateral": r"(lateral|externo|externe|aussen|laterale|латеральн|наружн)",
+    "medial": (
+        r"(medial compartment|compartimento medial|compartimento interno"
+        r"|femorotibial medial|femorotibial interno|medial femoral condyle"
+        r"|medial tibial plateau|condilo femoral medial|condilo femoral interno"
+        r"|platillo tibial medial|innenkompartiment|mediale kompartiment"
+        r"|\bmedial\w*|\binterno\b|\binterne\b|\binnen\w*|\bmediale\b"
+        r"|εσω|μηριαιου κονδυλου|медиальн\w*|внутренн\w*)"
+    ),
+    "lateral": (
+        r"(lateral compartment|compartimento lateral|compartimento externo"
+        r"|femorotibial lateral|femorotibial externo|lateral femoral condyle"
+        r"|lateral tibial plateau|condilo femoral lateral|condilo femoral externo"
+        r"|platillo tibial lateral|aussenkompartiment|laterale kompartiment"
+        r"|\blateral\w*|\bexterno\b|\bexterne\b|\baussen\w*|\blaterale\b"
+        r"|εξω|латеральн\w*|наружн\w*)"
+    ),
+    "pf": (
+        r"(patellofemoral|patelofemoral|femoropatelar|femoropatellar"
+        r"|femoro-patellaire|femoropatellare|retropatellar|retropatelar"
+        r"|\bpatellar\w*|\bpatella\b|\bpatellae\b|\brotulian\w*|\brotula\b"
+        r"|troclea|trochlea|trochlear|kneecap|femoropatellar"
+        r"|επιγονατιδ|пателлофеморальн\w*|надколенник\w*)"
+    ),
 }
 
 _ACL = (
@@ -85,7 +124,8 @@ _ACL = (
     r"|anterior cruciate|cruzado anterior|crociato anteriore"
     r"|vorderes kreuzband|vorderen kreuzband"
     r"|croise anterieur|voorste kruisband|on capraz bag"
-    r"|передней крестообразн|передняя крестообразн)"
+    r"|передней крестообразн|передняя крестообразн"
+    r"|προσθι\w* χιαστ\w*)"
 )
 
 _MCL = (
@@ -93,49 +133,61 @@ _MCL = (
     r"|medial collateral|colateral medial|colateral interno|collaterale mediale"
     r"|innenband|mediales kollateralband|collateral interne|mediale collaterale"
     r"|ic yan bag"
-    r"|внутренней боков|медиальной коллатеральн)"
+    r"|внутренней боков|медиальной коллатеральн"
+    r"|εσω πλαγι\w*)"
 )
 
 _MED_MEN = (
     r"(medial meniscus|menisco interno|menisco medial|menisque interne"
     r"|menisque medial|innenmeniskus|medialer meniskus|mediale meniscus"
     r"|ic menisku|medial menisku|menisco mediale"
-    r"|медиального мениск|внутреннего мениск)"
+    r"|медиального мениск|внутреннего мениск"
+    r"|εσω μηνισκ\w*)"
 )
 
 _LAT_MEN = (
     r"(lateral meniscus|menisco externo|menisco lateral|menisque externe"
     r"|menisque lateral|aussenmeniskus|lateraler meniskus|laterale meniscus"
     r"|dis menisku|lateral menisku|menisco laterale"
-    r"|латерального мениск|наружного мениск)"
-)
-
-_PF = (
-    r"(patellofemoral|femoropatelar|femoropatellar|retropatellar|patelofemoral"
-    r"|femoro-patellaire|femoropatellare|пателлофеморальн)"
+    r"|латерального мениск|наружного мениск"
+    r"|εξω μηνισκ\w*)"
 )
 
 # target -> (anchor regex, required finding regex or None when the anchor is the finding)
+# The three OA targets are not listed here; they need compartment attribution and
+# are handled by _score_compartment_oa.
 ANCHORS: dict[str, tuple[str, str | None]] = {
     "ACL": (_ACL, TEAR),
     "MCL": (_MCL, TEAR),
     "Medial Meniscus": (_MED_MEN, "(" + TEAR + "|" + DEGEN + ")"),
     "Lateral Meniscus": (_LAT_MEN, "(" + TEAR + "|" + DEGEN + ")"),
-    "PF OA": (_PF, _OA),
     "Effusion": (
-        r"(joint effusion|effusion|derrame|erguss|gelenkerguss|epanchement"
-        r"|vocht|effusie|efuzyon|eklem sivisi"
-        r"|выпот|синовиальной жидкост)",
+        r"(joint effusion|effusion|joint fluid|fluid in the joint|articular fluid"
+        r"|suprapatellar fluid|joint distension|hydrops|hydrarthrosis"
+        r"|derrame|liquido articular|aumento de liquido"
+        r"|erguss|gelenkerguss|gelenkfluessigkeit|gelenkflussigkeit"
+        r"|epanchement|liquide articulaire"
+        r"|vocht|gewrichtsvocht|effusie"
+        r"|efuzyon|eklem sivisi|eklem ici sivi|sivi artis|sivi miktari|hidrartroz"
+        r"|выпот|жидкост\w* в полости|синовиальн\w* жидкост"
+        r"|αρθρικο υγρο|υγρου|συλλογ\w*)",
         None,
     ),
     "Synovitis": (
-        r"(synovitis|sinovitis|synovialitis|synovite|sinovit|синовит)",
+        r"(synovitis|synovial thickening|synovial proliferation|synovial hypertroph"
+        r"|pannus|sinovitis|engrosamiento sinovial|hipertrofia sinovial"
+        r"|synovialitis|synovialis hypertroph|synoviale verdickung"
+        r"|synovite|epaississement synovial"
+        r"|synoviale verdikking|sinovit|sinovyal kalinlasma"
+        r"|синовит|утолщение синовиальн\w*"
+        r"|υμενιτιδ\w*|υμενα παχυνσ|παχυνση του αρθρικου υμενα)",
         None,
     ),
     "Baker's": (
         r"(baker|popliteal cyst|quiste de baker|quiste poplite|bakerzyste"
         r"|poplitealzyste|kyste de baker|kyste poplite|baker kisti|popliteal kist"
-        r"|киста бейкера|подколенной кист)",
+        r"|киста бейкера|подколенной кист"
+        r"|ιγνυακη κυστ\w*|κυστη baker|κυστη του baker)",
         None,
     ),
     "Contusion": (
@@ -144,17 +196,18 @@ ANCHORS: dict[str, tuple[str, str | None]] = {
         r"|knochenmarkodem|knochenmarksodem|kontusion"
         r"|oedeme osseux|botcontusie|beenmergoedeem"
         r"|kontuzyon|kemik ilig odem"
-        r"|ушиб|отек костного мозга|контузи)",
+        r"|ушиб|отек костного мозга|контузи"
+        r"|οστεομυελικ\w* οιδημα|οιδημα μυελου|μωλωπ\w*)",
         None,
     ),
     "Fracture": (
         r"(fracture|fractura|fratura|frattura|fraktur|breuk|kirik|avulsion"
-        r"|перелом)",
+        r"|перелом|καταγμα\w*|καταγματ\w*)",
         None,
     ),
 }
 
-_COMPARTMENT_OA = {"Medial OA": "medial", "Lateral OA": "lateral"}
+_COMPARTMENT_OA = {"Medial OA": "medial", "Lateral OA": "lateral", "PF OA": "pf"}
 
 
 def _negated(text: str, start: int) -> bool:
@@ -175,13 +228,41 @@ def _score_simple(text: str, anchor: str, finding: str | None) -> float:
     return 0.0
 
 
+# Phrases that name a femorotibial structure explicitly. Used to disambiguate a
+# clause such as "cartilage defect at lateral trochlea", where "lateral" qualifies
+# a patellofemoral structure and must not be credited to the lateral compartment.
+_FT_SPECIFIC = {
+    "medial": (
+        r"(medial compartment|compartimento medial|compartimento interno"
+        r"|femorotibial medial|femorotibial interno|medial femoral condyle"
+        r"|medial tibial plateau|condilo femoral medial|condilo femoral interno"
+        r"|platillo tibial medial|innenkompartiment|mediale kompartiment)"
+    ),
+    "lateral": (
+        r"(lateral compartment|compartimento lateral|compartimento externo"
+        r"|femorotibial lateral|femorotibial externo|lateral femoral condyle"
+        r"|lateral tibial plateau|condilo femoral lateral|condilo femoral externo"
+        r"|platillo tibial lateral|aussenkompartiment|laterale kompartiment)"
+    ),
+}
+
+
 def _score_compartment_oa(text: str, side: str) -> float:
-    """OA is compartment-specific: require the OA term and the side in one clause."""
+    """OA is compartment-specific: require an OA term and the compartment in one clause."""
     side_re = _SIDE[side]
+    pf_re = _SIDE["pf"]
     for clause in re.split(r"[.;\n]", text):
         m = re.search(_OA, clause)
-        if m and re.search(side_re, clause) and not _negated(clause, m.start()):
-            return 1.0
+        if not m or _negated(clause, m.start()):
+            continue
+        if not re.search(side_re, clause):
+            continue
+        if side in _FT_SPECIFIC and re.search(pf_re, clause):
+            # Clause concerns the patellofemoral joint; only credit the
+            # femorotibial compartment when it is named outright.
+            if not re.search(_FT_SPECIFIC[side], clause):
+                continue
+        return 1.0
     return 0.0
 
 

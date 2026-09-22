@@ -53,25 +53,53 @@ lexicon changes must not be tuned aggressively against it.
 Sequence triage is therefore pre-solved — no DICOM header parsing is needed to
 route series to the right heads.
 
-## Labeler baseline
+## Labeler progress
 
 Rule-based multilingual lexicon (`src/rsna_knee/reports.py`), scored on the 58
-gold studies:
+gold studies with `scripts/eval_labeler.py`:
 
-- **Macro AUC 0.663**, mean F1 0.52.
-- Reliable: MCL 0.79, Baker's 0.78, ACL 0.76, Lateral Meniscus 0.76, Fracture 0.75.
-- Near chance: Lateral OA 0.51, PF OA 0.52, Effusion 0.53, Medial OA 0.58.
+| version | macro AUC | mean F1 | zero-label studies |
+|---|---|---|---|
+| v1 baseline | 0.663 | 0.519 | 29.6% |
+| + word-bounded negation | 0.664 | 0.522 | — |
+| + OA reworked around chondral findings | 0.701 | 0.607 | — |
+| + effusion/synovitis vocabulary | 0.711 | 0.621 | — |
+| + Greek lexicon | **0.720** | **0.633** | **19.0%** |
 
-Known causes for the weak targets:
-- **OA** — compartment attribution is too strict; reports often state
-  osteoarthritis without naming a compartment, or describe it as chondropathy /
-  cartilage loss / osteophytes instead.
-- **Effusion** — a binary "is effusion mentioned" test is not discriminative,
-  because trace effusion is mentioned in most reports. Gold appears to track
-  *clinically significant* effusion, so this needs severity grading
-  (trace/minimal vs moderate/large).
-- **Greek** had no lexicon at all in v1.
+Current per-target AUC: MCL 0.85, ACL 0.78, Lateral Meniscus 0.78, Baker's 0.78,
+Contusion 0.75, Fracture 0.73, PF OA 0.71, Medial OA 0.70, Synovitis 0.66,
+Lateral OA 0.65, Medial Meniscus 0.63, Effusion 0.63.
 
-A fixed bug worth remembering: unbounded negation cues matched inside words
-(Spanish `menisco inter**no **y` contains `no `), silently negating findings
-across Romance-language reports. All cues are now `\b`-anchored.
+### What moved the needle
+
+1. **Negation bug.** Unbounded cues matched inside words — Spanish
+   `menisco inter**no **y` contains `no `, silently negating the finding that
+   followed. This corrupted Romance-language reports wholesale. All cues are now
+   `\b`-anchored.
+2. **OA is written as cartilage damage, not as "arthrosis".** Gold PF-OA cases
+   read "chondral ulcer of the femoral trochlea" or "osteochondral defect at the
+   lateral patellar facet". Adding chondral/cartilage vocabulary and
+   patella/trochlea anchors lifted the three OA targets by 0.12–0.18 AUC each.
+   `(?<!sub)` guards keep *subchondral* (e.g. fracture oedema) from firing.
+3. **Compartment attribution.** "Cartilage defect at lateral trochlea" is
+   patellofemoral, not lateral-compartment. PF terms now take precedence unless a
+   femorotibial structure is named outright.
+4. **Greek.** 321 studies (7.3%) had no coverage at all in v1.
+
+### Caveat on overfitting
+
+At n=58, per-target AUC is noise-dominated — the negation fix looked flat overall
+while swinging Lateral Meniscus +0.09 and Medial Meniscus −0.06. Changes have
+therefore been grounded in medical/linguistic vocabulary that generalises, not in
+per-example tweaks. The corpus-level coverage figure (zero-label studies
+29.6% → 19.0%) is independent evidence the gains are real, since the gold set
+cannot observe it.
+
+### Still weak
+
+- **Effusion (0.63)** — recall is fixed but precision is capped, because trace
+  effusion is mentioned in most reports while gold appears to track
+  *clinically significant* effusion. Needs severity grading (trace/minimal vs
+  moderate/large) rather than presence/absence.
+- **Medial Meniscus (0.63)** — likely needs the same treatment for
+  degenerative signal vs true tear.
