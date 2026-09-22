@@ -36,11 +36,14 @@ def normalize(text: str) -> str:
 # Pathology terms indicating a tear or injury, across the observed languages.
 TEAR = (
     r"(tear|torn|rupture|ruptur|disrupt|discontinu|partial thickness|full thickness"
-    r"|rotura|ruptura|desgarro|roto|lesion|lesao|rottura|lacerazione"
+    # \broto\b is essential: unbounded, "roto" fires inside "protocol" and
+    # "proton density", which appear in ~19% of reports.
+    r"|rotura|ruptura|desgarro|\broto\b|lesion|lesao|rottura|lacerazione"
     r"|riss|einriss|laesion"
     r"|dechirure|fissuration"
     r"|scheur|ruptuur"
-    r"|yirtik|rupturu|yirtilma"
+    # yirti\w* covers the Turkish inflections: yirtik, yirtigi, yirtilma.
+    r"|yirti\w*|rupturu"
     r"|разрыв|повреждени|надрыв"
     r"|ρηξ\w*|ρηγμα|διατομ\w*)"
 )
@@ -50,34 +53,68 @@ DEGEN = (
     r"|dejenerasyon|εκφυλ\w*)"
 )
 
-# Negation cues; searched in the text immediately preceding a match.
+# --- negation (NegEx-style, sentence-scoped, bidirectional) -----------------
 #
-# Every cue is word-bounded. Without \b, short cues match inside ordinary words --
-# Spanish "menisco interno y" contains the substring "no ", which silently negated
-# the following finding. interno/externo are pervasive in Romance-language reports,
-# so an unbounded "no " corrupts a large fraction of the corpus.
-NEGATION = (
+# Cues are split by the direction they scope, because negation position is
+# language-dependent: English/Romance/Greek negate before the finding ("no tear of
+# the medial meniscus"), while Turkish and Russian are verb-final and negate after
+# it ("medial menisküs yırtığı YOK", "разрыв НЕ ВЫЯВЛЕН"). English also has common
+# post-forms ("...tear is not identified"), which a backward-only scan misses
+# entirely and scores as positive.
+#
+# Every cue is word-bounded. Unbounded short cues match inside ordinary words --
+# Spanish "menisco interno y" contains "no ", which silently negated whatever
+# followed, and interno/externo are pervasive in Romance-language reports.
+
+# Cues that scope FORWARD over the finding that follows them.
+PRE_NEGATION = (
     r"(\bno\b|\bnot\b|\bwithout\b|\babsence of\b|\bnegative for\b|\bfree of\b"
-    r"|\bunremarkable\b|\bintact\b|\bnormal\w*\b|\bno evidence\b"
-    r"|\bsin\b|\bausencia\b|\bintegro\b|\bintegra\b|\bconservad\w*\b|\bnormales\b"
-    r"|\bkeine?\b|\bohne\b|\bunauffaellig\w*\b|\bintakt\b|\bregelrecht\w*\b"
+    r"|\bno evidence\b"
+    r"|\bsin\b|\bausencia\b"
+    r"|\bkeine?\b|\bohne\b"
     r"|\bpas de\b|\bsans\b|\babsence\b"
-    r"|\bgeen\b|\bzonder\b|\bintacte\b"
-    r"|\byok\b|\byoktur\b|\bizlenmedi\b|\bizlenmemistir\b|\bsaglam\b|\bdogaldir\b"
-    r"|\bнет\b|\bбез\b|\bне выявлен\w*\b|\bне определя\w*\b|\bинтакт\w*\b|\bсохранен\w*\b"
-    r"|\bδεν\b|\bχωρις\b|\bακεραι\w*\b|\bφυσιολογικ\w*\b)"
+    r"|\bgeen\b|\bzonder\b"
+    r"|\bнет\b|\bбез\b|\bне\b"
+    r"|\bδεν\b|\bχωρις\b)"
 )
 
-# How far back to look for a negation cue, and how far to look for a finding term.
-NEG_WINDOW = 60
-FIND_WINDOW = 90
+# Cues that scope BACKWARD over the finding that precedes them.
+POST_NEGATION = (
+    r"(\bnot\b|\bintact\b|\bunremarkable\b|\bnormal\w*\b|\bpreserved\b"
+    r"|\bintegro\b|\bintegra\b|\bconservad\w*\b|\bnormales\b"
+    r"|\bintakt\b|\bunauffaellig\w*\b|\bregelrecht\w*\b"
+    r"|\bintacte\b"
+    r"|\byok\b|\byoktur\b|\bizlenmedi\b|\bizlenmemistir\b|\bsaglam\b|\bdogaldir\b"
+    r"|\bnormaldir\b|\bmevcut degil\b"
+    r"|\bне выявлен\w*\b|\bне определя\w*\b|\bинтакт\w*\b|\bсохранен\w*\b"
+    r"|\bακεραι\w*\b|\bφυσιολογικ\w*\b)"
+)
+
+# Tokens that terminate a negation scope: after one of these, the cue no longer
+# applies ("no effusion BUT there is a meniscal tear").
+NEG_TERMINATOR = (
+    r"(\bbut\b|\bhowever\b|\balthough\b|\bwhereas\b|\bwhile\b|\bwith\b"
+    r"|\bshowing\b|\bdemonstrat\w*\b|\bthere is\b|\bpresent\b"
+    r"|\bpero\b|\bsin embargo\b|\baunque\b"
+    r"|\baber\b|\bjedoch\b"
+    r"|\bmaar\b|\bancak\b|\bfakat\b"
+    r"|\bно\b|\bоднако\b"
+    r"|\bαλλα\b|\bωστοσο\b)"
+)
+
+# Scope sizes. The backward scope is tighter because post-cues bind closely to the
+# finding they qualify, while pre-cues routinely govern a longer noun phrase.
+PRE_WINDOW = 60
+POST_WINDOW = 45
+# How far from an OA term the compartment word must appear to be attributed to it.
+OA_SIDE_WINDOW = 60
 
 # Degenerative / cartilage findings. Gold PF-OA cases are frequently written as a
 # chondral defect rather than the word "arthrosis", so cartilage vocabulary has to
 # count. "(?<!sub)" keeps "subchondral" (e.g. subchondral fracture oedema) from
 # firing, since that is not itself a degenerative finding.
 _OA = (
-    r"(osteoarthritis|osteoarthrosis|arthrosis|arthrose|artrosis|artrose|artrosi"
+    r"(osteoarthriti\w*|osteoarthrosis|arthrosis|arthrose|artrosis|artrose|artrosi"
     r"|gonarthrose|gonartrosis|gonartroz|degenerative joint|joint space narrowing"
     r"|chondropath|chondromalac|condropat|condromalac|chondrosis|condrosis"
     r"|(?<!sub)chondral|(?<!sub)condral|cartilage loss|cartilage defect"
@@ -210,21 +247,64 @@ ANCHORS: dict[str, tuple[str, str | None]] = {
 _COMPARTMENT_OA = {"Medial OA": "medial", "Lateral OA": "lateral", "PF OA": "pf"}
 
 
-def _negated(text: str, start: int) -> bool:
-    """True if a negation cue appears shortly before position `start`."""
-    window = text[max(0, start - NEG_WINDOW):start]
-    return re.search(NEGATION, window) is not None
+_SENT_SPLIT = re.compile(r"[.;:\n]|(?:\s-\s)")
+
+# Sub-clause boundaries. Compartment attribution must not cross one of these:
+# "the lateral compartment shows osteoarthritis WHILE the medial compartment is
+# normal" contains both side words near the OA term, and only clause structure
+# says which compartment the finding belongs to.
+_CLAUSE_SPLIT = re.compile(
+    r",|\bbut\b|\bhowever\b|\bwhile\b|\bwhereas\b|\balthough\b"
+    r"|\bpero\b|\baunque\b|\baber\b|\bjedoch\b|\bmaar\b|\bancak\b|\bfakat\b"
+    r"|\bно\b|\bоднако\b|\bαλλα\b|\bωστοσο\b"
+)
+
+
+def sentences(text: str) -> list[str]:
+    """Split a normalised report into sentence-like units.
+
+    Negation is scoped to these units, so a cue in one sentence can never suppress
+    a finding in the next -- previously "ACL tear is not seen. Medial meniscus tear
+    is present." lost the meniscus label to the ACL sentence's negation.
+    """
+    return [s for s in _SENT_SPLIT.split(text) if s and not s.isspace()]
+
+
+def _negation_cues(sentence: str) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Spans of forward-scoping and backward-scoping negation cues in one sentence."""
+    pre = [(m.start(), m.end()) for m in re.finditer(PRE_NEGATION, sentence)]
+    post = [(m.start(), m.end()) for m in re.finditer(POST_NEGATION, sentence)]
+    return pre, post
+
+
+def _is_negated(
+    sentence: str,
+    start: int,
+    end: int,
+    pre: list[tuple[int, int]],
+    post: list[tuple[int, int]],
+) -> bool:
+    """True if a finding spanning [start, end) falls inside a negation scope."""
+    for _, cue_end in pre:
+        if cue_end <= start and start - cue_end <= PRE_WINDOW:
+            if not re.search(NEG_TERMINATOR, sentence[cue_end:start]):
+                return True
+    for cue_start, _ in post:
+        if cue_start >= end and cue_start - end <= POST_WINDOW:
+            if not re.search(NEG_TERMINATOR, sentence[end:cue_start]):
+                return True
+    return False
 
 
 def _score_simple(text: str, anchor: str, finding: str | None) -> float:
-    """1.0 if an affirmed mention of the target exists, else 0.0."""
-    for m in re.finditer(anchor, text):
-        if finding is not None:
-            window = text[max(0, m.start() - FIND_WINDOW): m.end() + FIND_WINDOW]
-            if not re.search(finding, window):
-                continue
-        if not _negated(text, m.start()):
-            return 1.0
+    """1.0 if an affirmed mention of the target exists in any sentence, else 0.0."""
+    for sentence in sentences(text):
+        if finding is not None and not re.search(finding, sentence):
+            continue
+        pre, post = _negation_cues(sentence)
+        for m in re.finditer(anchor, sentence):
+            if not _is_negated(sentence, m.start(), m.end(), pre, post):
+                return 1.0
     return 0.0
 
 
@@ -248,21 +328,30 @@ _FT_SPECIFIC = {
 
 
 def _score_compartment_oa(text: str, side: str) -> float:
-    """OA is compartment-specific: require an OA term and the compartment in one clause."""
+    """OA is compartment-specific: the compartment word must sit near the OA term.
+
+    Every OA match in a sentence is considered, not just the first -- a sentence
+    like "the lateral compartment shows osteoarthritis while the medial compartment
+    is normal" otherwise credited Medial OA off the trailing, negated phrase.
+    """
     side_re = _SIDE[side]
     pf_re = _SIDE["pf"]
-    for clause in re.split(r"[.;\n]", text):
-        m = re.search(_OA, clause)
-        if not m or _negated(clause, m.start()):
-            continue
-        if not re.search(side_re, clause):
-            continue
-        if side in _FT_SPECIFIC and re.search(pf_re, clause):
-            # Clause concerns the patellofemoral joint; only credit the
-            # femorotibial compartment when it is named outright.
-            if not re.search(_FT_SPECIFIC[side], clause):
+    for sentence in sentences(text):
+        for clause in _CLAUSE_SPLIT.split(sentence):
+            if not clause or clause.isspace():
                 continue
-        return 1.0
+            if not re.search(side_re, clause):
+                continue
+            pre, post = _negation_cues(clause)
+            for m in re.finditer(_OA, clause):
+                if _is_negated(clause, m.start(), m.end(), pre, post):
+                    continue
+                if side in _FT_SPECIFIC and re.search(pf_re, clause):
+                    # Clause concerns the patellofemoral joint; only credit the
+                    # femorotibial compartment when it is named outright.
+                    if not re.search(_FT_SPECIFIC[side], clause):
+                        continue
+                return 1.0
     return 0.0
 
 

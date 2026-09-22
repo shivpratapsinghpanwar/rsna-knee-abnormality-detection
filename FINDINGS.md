@@ -64,7 +64,33 @@ gold studies with `scripts/eval_labeler.py`:
 | + word-bounded negation | 0.664 | 0.522 | — |
 | + OA reworked around chondral findings | 0.701 | 0.607 | — |
 | + effusion/synovitis vocabulary | 0.711 | 0.621 | — |
-| + Greek lexicon | **0.720** | **0.633** | **19.0%** |
+| + Greek lexicon | 0.720 | 0.633 | 19.0% |
+| + sentence-scoped bidirectional negation (Phase 0) | **0.722** | **0.641** | 19.4% |
+
+### Phase 0 — correctness rewrite
+
+An audit against the full 4407-report corpus found four defects that corrupted
+labels corpus-wide. All are now fixed and pinned by `tests/test_reports.py`
+(16 cases, all passing):
+
+- **`roto` was unbounded**, firing inside "p**roto**col" and "p**roto**n density" —
+  present in 19.2% of reports, flipping 126 meniscus labels. Now `\broto\b`.
+- **Negation was backward-only**, so "medial meniscus tear *is not identified*"
+  scored positive. Replaced with NegEx-style scoping: cues are split into
+  forward-scoping (English/Romance/Greek: "no tear of...") and backward-scoping
+  (Turkish/Russian are verb-final: "yırtığı **yoktur**", "разрыв **не выявлен**"),
+  with scope released by terminators ("no effusion **but** there is a tear").
+- **Negation bled across sentences** — "ACL tear is not seen. Medial meniscus tear
+  is present." lost the meniscus label. Negation is now sentence-scoped.
+- **Compartment OA crossed clause boundaries** — "lateral compartment shows
+  osteoarthritis **while** the medial compartment is normal" credited Medial OA.
+  Attribution is now sub-clause scoped, and all OA matches are considered, not
+  just the first.
+
+Headline AUC moved only 0.720 → 0.722, which is the expected outcome at n=58 —
+but ACL jumped 0.78 → 0.89 and the corpus-wide label corruption is gone. This is
+a correctness fix whose value shows up in the 4349 weak labels that train the
+image model, not in the 58-study gold score.
 
 Current per-target AUC: MCL 0.85, ACL 0.78, Lateral Meniscus 0.78, Baker's 0.78,
 Contusion 0.75, Fracture 0.73, PF OA 0.71, Medial OA 0.70, Synovitis 0.66,
