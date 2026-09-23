@@ -162,6 +162,61 @@ in Phase 1. What remains:
   improvements from noise. Additional labeler work should be judged on corpus-level
   coverage and on downstream image-model AUC, not on this set.
 
+## Image model results
+
+Trained on the full 17,071-mosaic corpus on Kaggle. resnet34 backbone, 8 epochs,
+~11 min/epoch, ~90 min per fold.
+
+| fold | best weak AUC | gold AUC at that epoch |
+|---|---|---|
+| 0 | 0.779 (epoch 5) | **0.793** |
+| 1 | 0.780 (epoch 7) | 0.766 |
+
+Two things are worth stating carefully, because they are easy to overclaim.
+
+**The model beats its own teacher.** The labeler scores 0.738 macro AUC against
+the gold studies; the image model scores **0.77-0.79** against the same kind of
+gold labels. Weak supervision worked as intended -- the network learned the
+anatomy rather than merely reproducing the report parser, including the parser's
+mistakes. That is the single most important result so far.
+
+**But the gold figure is noisy.** Only 58 studies carry gold labels, so roughly
+12 land in any one fold. The 0.793 and 0.766 differ by more than the folds
+really do. The stable number is the weak AUC over ~880 held-out studies, and the
+two folds agree there to within 0.001 (0.779 vs 0.780), which is the actual
+evidence that the result is not a lucky split.
+
+### Per-target, fold 0 (weak AUC, ~880 held-out studies)
+
+| target | image model | labeler (gold) |
+|---|---|---|
+| Synovitis | **0.862** | 0.650 |
+| Baker's | 0.848 | 0.768 |
+| Effusion | 0.830 | 0.780 |
+| Medial OA | 0.798 | 0.710 |
+| ACL | 0.795 | 0.886 |
+| Lateral OA | 0.788 | 0.607 |
+| Contusion | 0.787 | 0.742 |
+| PF OA | 0.765 | 0.705 |
+| Lateral Meniscus | 0.755 | 0.769 |
+| Medial Meniscus | 0.748 | 0.701 |
+| Fracture | 0.734 | 0.728 |
+| MCL | **0.611** | 0.813 |
+
+The two columns measure different things -- the image model against weak labels
+on 880 studies, the labeler against gold on 58 -- so they are not directly
+comparable. What the shape shows is still informative:
+
+- **The image model is strongest exactly where the labeler was weakest.**
+  Synovitis and Lateral OA were the labeler's two worst targets (0.65, 0.61) and
+  are among the model's best. Effusion and a joint full of fluid are far more
+  obvious in a fluid-sensitive sequence than in prose that hedges about it.
+- **MCL (0.611) is the clear failure.** It is the rarest target at 4.7% positive,
+  so a fold holds only ~40 positives, and a medial collateral sprain is a subtle
+  finding on a single coronal sequence. This is where the next gain is.
+- **ACL drops (0.886 -> 0.795)** relative to the labeler. ACL tears are stated
+  plainly in reports, so the text was easy; the images are harder.
+
 ### Where the remaining headroom is
 
 The labeler is no longer the bottleneck it was. At 0.738 macro AUC it is a usable

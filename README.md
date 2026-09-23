@@ -147,11 +147,14 @@ run is resumable, so re-running once the window clears picks up where it left of
 
 - **Labeler** — done and validated: macro AUC **0.738** on the 58 gold studies,
   up from 0.663 at v1. 24 regression tests.
-- **Image pipeline** — implemented and tested end to end (preprocess -> train ->
-  submission). **Not yet trained at scale**: that needs a Kaggle run over the
-  full corpus.
-- **Local dev corpus** — 18 mosaics across 5 studies, enough to exercise the
-  code but not to train anything meaningful. Further fetching is blocked by the
-  429 cooldown above; re-run `fetch_dev_subset.py` to resume.
-- **Next** — `scripts/kaggle_push_code.py`, then notebook 01 to build the corpus,
-  02 to train 5 folds, 03 to submit.
+- **Corpus** — built on Kaggle: **17,071 mosaics over all 4,407 studies, 8.86 GB**.
+- **Image model** — trained on the full corpus. Folds 0 and 1 reach weak AUC
+  **0.779 / 0.780** over ~880 held-out studies, and **0.79 / 0.77 gold AUC**.
+  The model beats its own teacher: the labeler scores 0.738 on gold, so the
+  network learned anatomy rather than copying the report parser. See
+  [FINDINGS.md](FINDINGS.md) for the per-target breakdown.
+- **Weakest target is MCL at 0.611** — the rarest at 4.7% positive. That, and
+  the meniscus targets at ~0.75, are where the next gain is.
+- **Local dev corpus** — 18 mosaics across 5 studies, enough to exercise the code
+  but not to train. Further fetching is blocked by the download quota above.
+- **Next** — fold 2, then `kaggle_run.py submit` for the leaderboard entry.
