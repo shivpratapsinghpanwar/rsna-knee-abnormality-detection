@@ -55,8 +55,10 @@ PREPROCESS = [
     "# already written.",
     BOOT,
     '''!cd {CODE} && python scripts/build_weak_labels.py''',
-    '''# Full corpus. Raise --workers to the number of available cores.
-!cd {CODE} && python scripts/preprocess_series.py --split train --workers 4''',
+    '''# Full corpus. --max-minutes stops under Kaggle's 12 h session limit so the
+# finished mosaics are saved; re-run the notebook to resume from them.
+!cd {CODE} && python scripts/preprocess_series.py --split train --workers 4 \\
+    --max-minutes 660''',
     '''!cd {CODE} && python scripts/preprocess_series.py --split test --workers 4''',
     '''from pathlib import Path
 prep = Path("/kaggle/working/prep")
@@ -79,7 +81,8 @@ TRAIN = [
     '''!cd {CODE} && python scripts/build_weak_labels.py''',
     '''FOLD = 0
 !cd {CODE} && python scripts/train.py --fold {FOLD} --epochs 8 --backbone resnet34 \\
-    --batch 2 --accum 8 --workers 2 --out /kaggle/working/models''',
+    --batch 2 --accum 8 --workers 2 --max-minutes 480 \\
+    --out /kaggle/working/models''',
     '''import json, glob
 for h in sorted(glob.glob("/kaggle/working/models/*_history.json")):
     print(h)

@@ -78,6 +78,10 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--limit", type=int, default=0, help="debug: cap study count")
     ap.add_argument("--out", default="")
+    # Kaggle kills a GPU session at ~9 h. Stopping under our own budget means the
+    # best checkpoint so far is already written and the run is still useful.
+    ap.add_argument("--max-minutes", type=float, default=0,
+                    help="stop after the epoch that crosses this (0 = no limit)")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -127,6 +131,8 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     ckpt = out_dir / f"fold{args.fold}_{args.backbone}.pt"
     history, best = [], -1.0
+    budget = args.max_minutes * 60 if args.max_minutes else float("inf")
+    started = time.time()
 
     for epoch in range(args.epochs):
         model.train()
@@ -176,12 +182,21 @@ def main() -> None:
                      targets=TARGETS),
                 ckpt,
             )
+        # Written every epoch, not just at the end, so a session killed partway
+        # still leaves a readable record of what happened.
+        (out_dir / f"fold{args.fold}_history.json").write_text(
+            json.dumps(history, indent=2)
+        )
+
+        if time.time() - started > budget:
+            print(f"\nreached the {args.max_minutes:g} min budget after epoch "
+                  f"{epoch}; stopping with the best checkpoint saved.")
+            break
 
     print(f"\nbest weak AUC {best:.4f} -> {ckpt}")
     print("per-target (final epoch):")
     for t, v in sorted(per.items(), key=lambda kv: kv[1]):
         print(f"  {t:18s} {v:.3f}")
-    (out_dir / f"fold{args.fold}_history.json").write_text(json.dumps(history, indent=2))
 
 
 if __name__ == "__main__":

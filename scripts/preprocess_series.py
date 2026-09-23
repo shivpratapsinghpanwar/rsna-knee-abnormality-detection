@@ -67,6 +67,11 @@ def main() -> None:
     ap.add_argument("--split", default="train", choices=["train", "test"])
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--limit", type=int, default=0, help="process only N series")
+    # A Kaggle session is killed at the 12 h mark and a killed run may save no
+    # output at all, losing hours of work. Stopping under our own budget keeps
+    # whatever is finished; the next run resumes from it.
+    ap.add_argument("--max-minutes", type=float, default=0,
+                    help="stop cleanly after this long (0 = no limit)")
     args = ap.parse_args()
 
     meta = pd.read_csv(CSV / f"{args.split}_series.csv")
@@ -93,20 +98,30 @@ def main() -> None:
 
     stats: dict[str, int] = {}
     t0 = time.time()
+    budget = args.max_minutes * 60 if args.max_minutes else float("inf")
+    stopped_early = False
     with ProcessPoolExecutor(args.workers) as ex:
         futs = [ex.submit(_one, j) for j in jobs]
         for i, f in enumerate(as_completed(futs), 1):
             _, status = f.result()
             key = status.split(":")[0]
             stats[key] = stats.get(key, 0) + 1
+            el = time.time() - t0
             if i % 100 == 0 or i == len(futs):
-                el = time.time() - t0
                 rate = i / el if el else 0
                 eta = (len(futs) - i) / rate / 60 if rate else 0
                 print(f"  {i}/{len(futs)}  {rate:.1f}/s  eta {eta:.0f}m  {stats}",
                       flush=True)
+            if el > budget:
+                stopped_early = True
+                print(f"\nreached the {args.max_minutes:g} min budget after "
+                      f"{i}/{len(futs)} series; cancelling the rest so the "
+                      f"finished work is saved. Re-run to resume.", flush=True)
+                for pending in futs:
+                    pending.cancel()
+                break
 
-    print("\ndone:", stats)
+    print("\ndone:", stats, "(stopped early)" if stopped_early else "")
     size = sum(p.stat().st_size for p in out_root.rglob("*.png"))
     print(f"corpus: {size / 1e9:.2f} GB in {out_root}")
 
