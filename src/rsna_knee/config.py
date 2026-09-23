@@ -23,30 +23,60 @@ def _first_existing(*candidates: Path) -> Path:
     return candidates[-1]
 
 
+def find_input(*names: str, marker: str = "") -> Path | None:
+    """Locate a mounted Kaggle input by name, whatever layout Kaggle uses.
+
+    Mount points are not uniform and have changed: a competition lands at
+    /kaggle/input/<slug>/, while datasets land at
+    /kaggle/input/datasets/<user>/<slug>/ and kernel outputs under a similar
+    nested path. Hard-coding one shape silently breaks the other -- which is
+    exactly how the first preprocessing run failed -- so search instead.
+
+    ``marker`` names a child that must exist, to reject a partial match.
+    """
+    roots = [Path("/kaggle/input")]
+    for name in names:
+        for root in roots:
+            if not root.exists():
+                continue
+            # Direct child first, then one or two levels of nesting
+            # (datasets/<user>/<slug>, kernels/<user>/<slug>).
+            for pattern in (name, f"*/{name}", f"*/*/{name}"):
+                for hit in sorted(root.glob(pattern)):
+                    if not hit.is_dir():
+                        continue
+                    if marker and not (hit / marker).exists():
+                        continue
+                    return hit
+    return None
+
+
 if ON_KAGGLE:
-    RAW = Path("/kaggle/input") / COMPETITION
     WORK = Path("/kaggle/working")
-    # The preprocessed corpus, when notebook 01's output is attached as an input
-    # dataset. Notebook 01 itself has no such input and falls through to
+    RAW = find_input(COMPETITION, marker="train.csv") or Path("/kaggle/input") / COMPETITION
+
+    # The mosaic corpus, when notebook 01's output is attached to a later stage.
+    # Notebook 01 itself has no such input and falls through to
     # /kaggle/working/prep, which is what it writes and what gets saved.
-    # RSNA_KNEE_PREP overrides the search if the dataset is attached under a
-    # different slug.
-    # Notebook 01's output mounts at /kaggle/input/<kernel-slug>/, so its prep/
-    # directory is found there without creating a separate dataset by hand.
+    # RSNA_KNEE_PREP overrides the search entirely.
     _prep_env = os.environ.get("RSNA_KNEE_PREP")
-    PREP = Path(_prep_env) if _prep_env else _first_existing(
-        *[
-            Path("/kaggle/input") / slug / sub
-            for slug in ("rsna-knee-preprocess", "rsna-knee-prep")
-            for sub in ("prep", "")
-        ],
-        WORK / "prep",
-    )
+    if _prep_env:
+        PREP = Path(_prep_env)
+    else:
+        _hit = find_input("rsna-knee-preprocess", "rsna-knee-prep", marker="prep")
+        PREP = (_hit / "prep") if _hit else _first_existing(
+            *(p for p in [find_input("rsna-knee-preprocess", "rsna-knee-prep")] if p),
+            WORK / "prep",
+        )
+
+    # Where this repo's own source was mounted, for scripts that shell out.
+    CODE = find_input("rsna-knee-code", marker="src")
 else:
     ROOT = Path(os.environ.get("RSNA_KNEE_ROOT", r"D:\kaggle_c"))
     RAW = ROOT / "data"
     WORK = ROOT / "work"
     PREP = ROOT / "prep"
+    CODE = Path(__file__).resolve().parents[2]
 
 CSV = RAW  # train.csv etc. sit alongside the series directories
 
