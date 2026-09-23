@@ -66,13 +66,45 @@ def _reset_client() -> None:
             delattr(_tl, attr)
 
 
-def download(name: str, dest: Path, attempts: int = 4) -> bool:
+# Kaggle rate-limits sustained parallel downloading with HTTP 429. When that
+# happens every worker must back off together -- retrying independently just
+# keeps the limit tripped -- so a 429 shuts this gate for everyone.
+_gate = threading.Event()
+_gate.set()
+_gate_lock = threading.Lock()
+
+# Kaggle's Retry-After after a sustained-download ban has been observed at ~13
+# hours. Sitting in sleep() that long is worse than stopping: the script is
+# resumable, so it is better to exit and be re-run once the window clears.
+MAX_BACKOFF = 900.0
+_gave_up = threading.Event()
+
+
+def _back_off(seconds: float) -> None:
+    """Pause every worker after a rate-limit response, or give up if it is long."""
+    if seconds > MAX_BACKOFF:
+        _gave_up.set()
+        _gate.set()  # release anyone waiting so the run can unwind
+        return
+    with _gate_lock:
+        if not _gate.is_set():
+            return  # another thread is already holding the gate shut
+        _gate.clear()
+    print(f"    rate-limited; pausing all workers {seconds:.0f}s", flush=True)
+    time.sleep(seconds)
+    _gate.set()
+
+
+def download(name: str, dest: Path, attempts: int = 5) -> bool:
     """Fetch one competition file. Two steps: signed URL, then a plain GET."""
     from kagglesdk.competitions.types.competition_api_service import (
         ApiDownloadDataFileRequest,
     )
 
     for attempt in range(attempts):
+        if _gave_up.is_set():
+            return False
+        _gate.wait(timeout=300)
         try:
             kaggle, session = _client()
             req = ApiDownloadDataFileRequest()
@@ -86,8 +118,17 @@ def download(name: str, dest: Path, attempts: int = 4) -> bool:
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(resp.content)
             return True
-        except Exception:
+        except Exception as exc:
             _reset_client()
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status in (429, 503):
+                retry_after = 0.0
+                try:
+                    retry_after = float(exc.response.headers.get("Retry-After", 0))
+                except Exception:
+                    pass
+                _back_off(max(retry_after, 30.0 * (attempt + 1)))
+                continue
             if attempt == attempts - 1:
                 return False
             time.sleep(1.5 * (attempt + 1))
@@ -173,7 +214,9 @@ def fetch_series(study: str, series: str, slot: int, names: list[str],
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--studies", type=int, default=60)
-    ap.add_argument("--workers", type=int, default=16)
+    # 16 workers reliably trips Kaggle's rate limiter within an hour or so; 6 is
+    # slower per series but sustains throughput instead of stalling in backoff.
+    ap.add_argument("--workers", type=int, default=6)
     args = ap.parse_args()
 
     print(f"listing train files for ~{args.studies} studies ...")
@@ -206,6 +249,11 @@ def main() -> None:
         el = time.time() - t0
         eta = (len(sel) - i) / (i / el) / 60 if el else 0
         print(f"  [{i}/{len(sel)}] {status:16s} eta {eta:5.0f}m  {stats}", flush=True)
+        if _gave_up.is_set():
+            print("\nKaggle has rate-limited this account for longer than "
+                  f"{MAX_BACKOFF / 60:.0f} min. Stopping here -- everything fetched "
+                  "so far is kept, and re-running resumes from this point.")
+            break
 
     shutil.rmtree(scratch, ignore_errors=True)
     root = PREP / "train"

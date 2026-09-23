@@ -100,12 +100,30 @@ dataset, then run `notebooks/01_preprocess` -> `02_train` -> `03_submit`
 > load C extensions (`numpy` fails with a DLL error). Keep the venv and data on a
 > clean path such as `D:\kaggle_c`. Python 3.14 has no torch wheels; use 3.13.
 
+## Kaggle API rate limits
+
+Two limits bite when pulling data locally, and both fail quietly:
+
+- **Listing** — `competition_list_files` pages 200 at a time and returns **503**
+  after a few thousand calls. Enumerating the ~800k files via the API is not
+  viable; build the manifest inside a notebook with filesystem calls instead.
+- **Downloading** — sustained parallel downloading returns **429**, and the
+  observed `Retry-After` is ~13 hours. 16 workers trips it within about an hour.
+
+`fetch_dev_subset.py` therefore defaults to 6 workers and shares one backoff gate
+across threads, so a single 429 pauses every worker rather than having each retry
+into the same wall. If the ban is longer than 15 minutes it stops cleanly; the
+run is resumable, so re-running once the window clears picks up where it left off.
+
 ## Status
 
 - **Labeler** — done and validated: macro AUC **0.738** on the 58 gold studies,
   up from 0.663 at v1. 24 regression tests.
 - **Image pipeline** — implemented and tested end to end (preprocess -> train ->
-  submission) on a local dev subset. **Not yet trained at scale**: that needs a
-  Kaggle run over the full corpus.
-- **Next** — push the code dataset, run notebook 01 to build the corpus, then
-  train 5 folds and submit.
+  submission). **Not yet trained at scale**: that needs a Kaggle run over the
+  full corpus.
+- **Local dev corpus** — 18 mosaics across 5 studies, enough to exercise the
+  code but not to train anything meaningful. Further fetching is blocked by the
+  429 cooldown above; re-run `fetch_dev_subset.py` to resume.
+- **Next** — `scripts/kaggle_push_code.py`, then notebook 01 to build the corpus,
+  02 to train 5 folds, 03 to submit.
