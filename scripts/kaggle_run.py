@@ -31,9 +31,7 @@ os.environ.setdefault("KAGGLE_CONFIG_DIR", os.path.expanduser("~/.kaggle"))
 REPO = Path(__file__).resolve().parents[1]
 COMPETITION = "rsna-knee-abnormality-detection"
 CODE_DS = "rsna-knee-code"
-WEIGHTS_DS = "rsna-knee-weights"
 PREP_KERNEL = "rsna-knee-preprocess"
-TRAIN_KERNEL = "rsna-knee-train"
 
 # stage -> (notebook, gpu, internet, dataset slugs, kernel slugs)
 #
@@ -45,15 +43,26 @@ STAGES = {
     # The submission notebook preprocesses the hidden test set itself from raw
     # DICOM, so it needs the weights but not the training corpus. Internet off is
     # required for the run to count as a code-competition entry.
-    "submit": ("03_submit.ipynb", True, False, [WEIGHTS_DS], []),
+    "submit": ("03_submit.ipynb", True, False, [], []),
 }
 
+# Folds to train, and therefore which train kernels the submission blends. Each
+# fold gets its own kernel: pushing every fold to one id would overwrite the
+# previous fold's weights, leaving only the last one.
+FOLDS = [0, 1, 2]
 
-def metadata(user: str, stage: str, nb: str, gpu: bool, net: bool,
+
+def kernel_slug(stage: str, fold: int | None = None) -> str:
+    if stage == "train":
+        return f"rsna-knee-train-f{fold}"
+    return f"rsna-knee-{stage}"
+
+
+def metadata(user: str, slug: str, title: str, nb: str, gpu: bool, net: bool,
              datasets: list[str], kernels: list[str]) -> dict:
     return {
-        "id": f"{user}/rsna-knee-{stage}",
-        "title": f"RSNA Knee - {stage}",
+        "id": f"{user}/{slug}",
+        "title": title,
         "code_file": nb,
         "language": "python",
         "kernel_type": "notebook",
@@ -79,6 +88,8 @@ def main() -> None:
     ap.add_argument("stage", choices=sorted(STAGES))
     ap.add_argument("--fold", type=int, default=0)
     ap.add_argument("--status", action="store_true", help="only report status")
+    ap.add_argument("--all-folds", action="store_true",
+                    help="with --status on train: report every fold")
     ap.add_argument("--wait", action="store_true", help="poll until the run ends")
     ap.add_argument("--poll", type=int, default=120, help="seconds between polls")
     args = ap.parse_args()
@@ -88,14 +99,26 @@ def main() -> None:
     api = KaggleApi()
     api.authenticate()
     user = api.config_values["username"]
-    ref = f"{user}/rsna-knee-{args.stage}"
+    fold = args.fold if args.stage == "train" else None
+    slug = kernel_slug(args.stage, fold)
+    ref = f"{user}/{slug}"
 
     if args.status:
+        if args.stage == "train" and args.all_folds:
+            for f in FOLDS:
+                r = f"{user}/{kernel_slug('train', f)}"
+                st, msg = status(api, r)
+                print(f"{r}: {st}  {msg}")
+            return
         st, msg = status(api, ref)
         print(f"{ref}: {st}  {msg}")
         return
 
     nb, gpu, net, datasets, kernels = STAGES[args.stage]
+    # The submission blends every trained fold, each of which lives in its own
+    # kernel output.
+    if args.stage == "submit":
+        kernels = [kernel_slug("train", f) for f in FOLDS]
     src = REPO / "notebooks" / nb
     if not src.exists():
         raise SystemExit(f"{src} missing -- run scripts/make_notebooks.py")
@@ -110,8 +133,10 @@ def main() -> None:
         # near-identical notebooks in the repo.
         text = text.replace("FOLD = 0", f"FOLD = {args.fold}")
     (stage_dir / nb).write_text(text, encoding="utf-8")
+    title = (f"RSNA Knee - train fold {fold}" if fold is not None
+             else f"RSNA Knee - {args.stage}")
     (stage_dir / "kernel-metadata.json").write_text(
-        json.dumps(metadata(user, args.stage, nb, gpu, net, datasets, kernels),
+        json.dumps(metadata(user, slug, title, nb, gpu, net, datasets, kernels),
                    indent=2)
     )
 

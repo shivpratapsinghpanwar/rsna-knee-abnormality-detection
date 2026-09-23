@@ -83,10 +83,17 @@ SUBMIT = [
     "# train/serve skew.",
     BOOT,
     '''import glob
-CKPTS = sorted(glob.glob("/kaggle/input/rsna-knee-weights/*.pt"))
-print(CKPTS)''',
+# Each training fold ran as its own kernel, so its checkpoints mount under that
+# kernel's own input directory.
+CKPTS = sorted(glob.glob("/kaggle/input/rsna-knee-train-f*/models/*.pt"))
+assert CKPTS, "no checkpoints found - is every train fold attached as a source?"
+for c in CKPTS:
+    print(c)
+# A shell magic interpolates a bare {name}; build the argument string here rather
+# than relying on an expression inside the braces.
+CKPT_ARGS = " ".join(CKPTS)''',
     '''!cd {code} && python scripts/infer.py --split test --out /kaggle/working/submission.csv \\
-    --ckpt {{" ".join(CKPTS)}}'''.format(code=CODE),
+    --ckpt {{CKPT_ARGS}}'''.format(code=CODE),
     '''import pandas as pd
 sub = pd.read_csv("/kaggle/working/submission.csv")
 print(sub.shape)
