@@ -1,10 +1,14 @@
+# Core pipeline. Install torch separately with the right CUDA build, e.g.
+#   uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 numpy
 pandas
 pydicom
-SimpleITK
+pillow
 scikit-learn
 torch
 timm
-transformers
-pyyaml
-tqdm
+
+# Local-only: streaming the dev subset from the Kaggle API.
+# Not needed inside a Kaggle notebook, which has the data mounted.
+requests
+kaggle

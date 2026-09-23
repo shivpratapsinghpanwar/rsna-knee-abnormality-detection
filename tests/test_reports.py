@@ -4,6 +4,11 @@ Each case below is a defect found by auditing the labeler against the full 4407
 report corpus. They are pinned here so a future lexicon change cannot silently
 reintroduce them.
 
+Scores are graded, not binary, so CASES assert on which side of the 0.5 decision
+boundary a score falls. That keeps every case's intent ("this is affirmed" /
+"this is negated") while leaving the grading constants free to be tuned. Cases
+that pin the grading itself live in ORDER_CASES and GRADE_CASES below.
+
 Run standalone: python tests/test_reports.py
 """
 
@@ -102,18 +107,91 @@ CASES = [
 ]
 
 
+# Cases pinning the tear-vs-degeneration split. Intrasubstance degeneration and a
+# stated tear are different entities and must not train the same target value.
+GRADE_CASES = [
+    (
+        "mucoid degeneration alone is not a tear",
+        "medial meniscus mucoid degeneration", "Medial Meniscus", "degen",
+    ),
+    (
+        "signal not reaching the articular surface is degeneration",
+        "increased signal in the posterior horn of the medial meniscus "
+        "that does not contact the articular surface",
+        "Medial Meniscus", "degen",
+    ),
+    (
+        "grade 3 signal reaches the surface and is a tear",
+        "grade iii signal in the posterior horn of the medial meniscus",
+        "Medial Meniscus", "pos",
+    ),
+    (
+        "grade 2 signal is not a tear",
+        "grade ii signal in the posterior horn of the medial meniscus",
+        "Medial Meniscus", "degen",
+    ),
+    (
+        "a named tear morphology is a tear",
+        "radial tear of the posterior root of the medial meniscus",
+        "Medial Meniscus", "pos",
+    ),
+    (
+        "meniscal extrusion counts as structural failure",
+        "medial meniskus ekstrude gorunumde", "Medial Meniscus", "pos",
+    ),
+    (
+        "hedged findings are discounted but stay positive",
+        "possible tear of the lateral meniscus", "Lateral Meniscus", "hedged",
+    ),
+]
+
+# Severity must be ordered, since ROC AUC scores ranking.
+ORDER_CASES = [
+    (
+        "effusion severity is ordered",
+        "Effusion",
+        ["trace joint effusion", "small joint effusion",
+         "moderate joint effusion", "large joint effusion"],
+    ),
+]
+
+BANDS = {
+    "pos": (0.99, 1.01),     # a stated, unhedged finding
+    "hedged": (0.5, 0.99),   # affirmed but qualified
+    "degen": (0.01, 0.5),    # degeneration without a tear
+    "neg": (-0.01, 0.01),    # negated or absent
+}
+
+
 def main() -> int:
     failures = []
     for desc, text, target, expected in CASES:
         got = label_report(text)[target]
-        if got != expected:
-            failures.append((desc, target, expected, got, text))
+        # CASES predate grading: assert only the side of the decision boundary.
+        if (got >= 0.5) != (expected >= 0.5):
+            side = "pos" if expected >= 0.5 else "neg"
+            failures.append((desc, target, f"{side} side", got, text))
+
+    for desc, text, target, band in GRADE_CASES:
+        lo, hi = BANDS[band]
+        got = label_report(text)[target]
+        if not (lo <= got <= hi):
+            failures.append((desc, target, f"{band} band [{lo}, {hi}]", got, text))
+
+    for desc, target, texts in ORDER_CASES:
+        scores = [label_report(t)[target] for t in texts]
+        if not all(a < b for a, b in zip(scores, scores[1:])):
+            failures.append((desc, target, "strictly increasing", scores,
+                             " | ".join(texts)))
 
     for desc, target, expected, got, text in failures:
-        print(f"FAIL  {desc}\n      target={target} expected={expected} got={got}"
-              f"\n      text={text!r}\n")
+        print("FAIL  " + desc)
+        print(f"      target={target} expected={expected} got={got}")
+        print(f"      text={text!r}")
+        print()
 
-    print(f"{len(CASES) - len(failures)}/{len(CASES)} passed")
+    total = len(CASES) + len(GRADE_CASES) + len(ORDER_CASES)
+    print(f"{total - len(failures)}/{total} passed")
     return 1 if failures else 0
 
 

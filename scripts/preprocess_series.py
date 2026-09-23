@@ -1,0 +1,115 @@
+"""Convert raw DICOM series into the PNG mosaic corpus used for training.
+
+Runs unchanged on Kaggle, where the whole competition is mounted, and on this
+workstation, where only a streamed dev subset exists -- it simply processes
+whatever series are present on disk.
+
+    python scripts/preprocess_series.py --split train --workers 8
+
+Resumable: a series whose mosaic already exists is skipped, so an interrupted run
+can be restarted and a Kaggle session that hits its 12 h limit can continue in a
+second session.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from pathlib import Path
+
+import pandas as pd
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from rsna_knee.config import CSV, PREP, RAW  # noqa: E402
+from rsna_knee.dicom_io import read_series  # noqa: E402
+from rsna_knee.preprocess import save_mosaic, volume_to_mosaic  # noqa: E402
+from rsna_knee.series import select_series  # noqa: E402
+
+
+def series_dir(split: str, study: str, series: str) -> Path:
+    return RAW / f"{split}_series" / study / series
+
+
+def count_slices(split: str, df: pd.DataFrame) -> dict[str, int]:
+    """Slice count per series, from the filesystem. Absent series count 0."""
+    counts: dict[str, int] = {}
+    for study, series in zip(df.StudyInstanceUID, df.SeriesInstanceUID):
+        d = series_dir(split, study, series)
+        counts[series] = sum(1 for _ in d.glob("*.dcm")) if d.is_dir() else 0
+    return counts
+
+
+def _one(args: tuple[str, str, str, str]) -> tuple[str, str]:
+    """Worker: read one series and write its mosaic. Returns (series, status)."""
+    split, study, series, out_path = args
+    out = Path(out_path)
+    if out.exists():
+        return series, "skip"
+    d = series_dir(split, study, series)
+    paths = sorted(d.glob("*.dcm"))
+    if not paths:
+        return series, "missing"
+    try:
+        vol = read_series(paths)
+        if vol.size == 0:
+            return series, "empty"
+        save_mosaic(volume_to_mosaic(vol), out)
+        return series, "ok"
+    except Exception as exc:  # a single bad series must not stop the corpus
+        return series, f"error:{type(exc).__name__}"
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--split", default="train", choices=["train", "test"])
+    ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--limit", type=int, default=0, help="process only N series")
+    args = ap.parse_args()
+
+    meta = pd.read_csv(CSV / f"{args.split}_series.csv")
+    print(f"{args.split}: {len(meta)} series listed, "
+          f"{meta.StudyInstanceUID.nunique()} studies")
+
+    counts = count_slices(args.split, meta)
+    present = sum(1 for v in counts.values() if v)
+    print(f"present on disk: {present} series")
+    if present == 0:
+        print("nothing to do -- no raw DICOM found under", RAW)
+        return
+
+    sel = select_series(meta[meta.SeriesInstanceUID.map(counts).fillna(0) > 0], counts)
+    if args.limit:
+        sel = sel.head(args.limit)
+    out_root = PREP / args.split
+    jobs = [
+        (args.split, r.StudyInstanceUID, r.SeriesInstanceUID,
+         str(out_root / r.StudyInstanceUID / f"{r.slot}_{r.SeriesInstanceUID}.png"))
+        for r in sel.itertuples()
+    ]
+    print(f"selected {len(jobs)} series -> {out_root}")
+
+    stats: dict[str, int] = {}
+    t0 = time.time()
+    with ProcessPoolExecutor(args.workers) as ex:
+        futs = [ex.submit(_one, j) for j in jobs]
+        for i, f in enumerate(as_completed(futs), 1):
+            _, status = f.result()
+            key = status.split(":")[0]
+            stats[key] = stats.get(key, 0) + 1
+            if i % 100 == 0 or i == len(futs):
+                el = time.time() - t0
+                rate = i / el if el else 0
+                eta = (len(futs) - i) / rate / 60 if rate else 0
+                print(f"  {i}/{len(futs)}  {rate:.1f}/s  eta {eta:.0f}m  {stats}",
+                      flush=True)
+
+    print("\ndone:", stats)
+    size = sum(p.stat().st_size for p in out_root.rglob("*.png"))
+    print(f"corpus: {size / 1e9:.2f} GB in {out_root}")
+
+
+if __name__ == "__main__":
+    main()

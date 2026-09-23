@@ -190,14 +190,117 @@ _LAT_MEN = (
     r"|εξω μηνισκ\w*)"
 )
 
+# --- meniscal grading, hedging and severity ------------------------------------
+#
+# These three axes turn the labeler's output from binary into graded. The image
+# model is scored by ROC AUC, which rewards ranking, so a report that says
+# "large effusion" should train a higher target than one saying "trace fluid",
+# and "mucoid degeneration" should not train the same target as "radial tear".
+
+# Explicit meniscal tear morphologies. A named tear pattern is a tear regardless
+# of how the rest of the sentence hedges.
+MENISCUS_TEAR_PATTERN = (
+    r"(bucket[- ]?handle|bucket handle|radial tear|longitudinal tear|vertical tear"
+    r"|horizontal tear|oblique tear|complex tear|parrot beak|flap tear|root tear"
+    r"|posterior root|displaced fragment|meniscal fragment"
+    r"|asa de cubo|rotura radial|rotura longitudinal|rotura horizontal"
+    r"|korbhenkel|radiarriss|laengsriss|horizontalriss"
+    r"|anse de seau|radiaire"
+    r"|emmerhandvat"
+    r"|kova sapi|radial yirtik|longitudinal yirtik|horizontal yirtik"
+    r"|ручка лейки|радиальн\w* разрыв"
+    r"|δικην λαβης καδου|ακτινωτ\w* ρηξ\w*)"
+)
+
+# Meniscal extrusion is a structural failure and tracks with root tears.
+MENISCUS_EXTRUSION = (
+    r"(extrusion|extrude|extrusao|extruido|extrusi[oó]n|ekstrude|ekstruzyon"
+    r"|subluxation of the meniscus|экструзи\w*|υπεξαρθρημα)"
+)
+
+# Stoller grading. Grade 3 signal reaches the articular surface and IS a tear;
+# grades 1-2 are intrasubstance degeneration and are not.
+GRADE_3 = r"(grade\s*(iii|3)\b|grado\s*(iii|3)\b|grad\s*(iii|3)\b|evre\s*(iii|3)\b|βαθμου\s*(iii|3)\b)"
+GRADE_12 = r"(grade\s*(i{1,2}|[12])\b|grado\s*(i{1,2}|[12])\b|grad\s*(i{1,2}|[12])\b|evre\s*(i{1,2}|[12])\b)"
+
+# Signal that reaches the articular surface is a tear; signal that explicitly does
+# not reach it is degeneration. Both phrasings are common and decisive.
+SURFACE_REACH = (
+    r"(extend\w*\s+((in)?to\s+)?the (articular )?surface|reach\w*\s+the (articular )?surface"
+    r"|contact\w*\s+the (articular )?surface|communicat\w*\s+with the (articular )?surface"
+    r"|surface extension|articular surface extension"
+    r"|contacta l[ao] superficie|se extiende a la superficie|alcanza la superficie"
+    r"|eklem yuzune uzan\w*|yuzeye ulas\w*"
+    r"|достига\w* сустав\w* поверхност"
+    r"|εκτεινεται στην αρθρικη επιφανεια)"
+)
+SURFACE_NO_REACH = (
+    r"(\bnot?\b\s+\w*\s*(extend|reach|contact|communicat)\w*\s+((in)?to\s+)?the (articular )?surface"
+    r"|without (extension|contact) (in)?to the (articular )?surface"
+    r"|no impresiona contactar|no contacta|sin extension a la superficie"
+    r"|sin alcanzar la superficie"
+    r"|eklem yuzune uzanmamakta|yuzeye ulasmamakta"
+    r"|не достига\w*"
+    r"|δεν εκτεινεται)"
+)
+
+# Abnormal intrasubstance signal, the substrate of meniscal grading. On its own it
+# is degeneration; it becomes a tear only once it reaches the articular surface.
+INTRASUBSTANCE_SIGNAL = (
+    r"(increased signal|hyperintense signal|signal hyperintensity|high signal"
+    r"|linear signal|signal intensity|signal change|signal alteration"
+    r"|aumento de senal|hiperintensidad|senal intrameniscal"
+    r"|signalanhebung|signalsteigerung|signalalteration"
+    r"|hypersignal|signaalverhoging"
+    r"|sinyal artis\w*|sinyal degisikli\w*|intrasubstans sinyal"
+    r"|повышени\w* сигнал|сигнал\w* измен"
+    r"|αυξημενο σημα|σηματοδοτησ\w*)"
+)
+
+# Hedging. A suspected finding is real evidence but weaker than a stated one.
+HEDGE = (
+    r"(\bpossible\b|\bpossibly\b|\bprobable\b|\bprobably\b|\bsuspicious for\b"
+    r"|\bsuspected\b|\bquestionable\b|\bcannot (be )?exclude\w*\b|\bmay represent\b"
+    r"|\bcould represent\b|\bequivocal\b|\bborderline\b|\blikely\b|\bapparent\b"
+    r"|\bpodria\b|\bprobable\b|\bsugestivo\b|\bsospecha\b|\bno se puede excluir\b"
+    r"|\bimpresiona\b|\bmoeglich\b|\bverdachtig\b|\bfraglich\b|\bvermutlich\b"
+    r"|\bmogelijk\b|\bverdacht\b"
+    r"|\bsuphel\w*\b|\bolabilir\b|\bdusundur\w*\b|\buyumlu olabilec\w*\b"
+    r"|\bвозможно\b|\bвероятно\b|\bподозрительн\w*\b|\bне исключ\w*\b"
+    r"|\bπιθαν\w*\b|\bυποπτ\w*\b)"
+)
+
+# Severity scale, used for graded targets such as effusion. Ordered strongest
+# first so the strongest qualifier present in a sentence wins.
+SEVERITY = [
+    (1.00, r"(\bmassive\b|\blarge\b|\bgross\b|\bmarked\b|\btense\b|\bsevere\b|\bextensive\b"
+           r"|\babundante\b|\bimportante\b|\bsevero\b|\bgrave\b"
+           r"|\bausgepraegt\w*\b|\bmassiv\w*\b|\bgross\w*\b"
+           r"|\bbelirgin\b|\byaygin\b|\bciddi\b|\bileri\b"
+           r"|\bвыраженн\w*\b|\bбольш\w*\b|\bμεγαλ\w*\b|\bαθροο\b)"),
+    (0.80, r"(\bmoderate\b|\bmoderado\b|\bmassig\b|\bmaessig\w*\b|\bmatig\b|\borta\b"
+           r"|\bумеренн\w*\b|\bμετρι\w*\b|\bικανη\b)"),
+    (0.55, r"(\bsmall\b|\bmild\b|\bslight\b|\bsome\b|\bleve\b|\bdiscreta\b|\bligero\b"
+           r"|\bgering\w*\b|\bleicht\w*\b|\bgeringe\b|\bbeperkte\b|\blicht\w*\b"
+           r"|\bhafif\b|\baz\b|\bнебольш\w*\b|\bнезначительн\w*\b|\bμικρ\w*\b|\bηπι\w*\b)"),
+    (0.35, r"(\btrace\b|\bminimal\b|\bminima\b|\bminimo\b|\bscant\b|\btiny\b"
+           r"|\bminimal\w*\b|\bspoor\b|\bminimal\b|\bеденичн\w*\b|\bследов\w*\b"
+           r"|\bελαχιστ\w*\b)"),
+]
+DEFAULT_SEVERITY = 0.70   # a finding stated with no qualifier at all
+
+# Graded score assigned when a meniscus shows degeneration but no tear. Non-zero
+# because degenerate menisci do carry tear risk, but well below a stated tear.
+DEGEN_ONLY = 0.30
+HEDGE_FACTOR = 0.65       # multiplier applied to a hedged finding
+
+
 # target -> (anchor regex, required finding regex or None when the anchor is the finding)
 # The three OA targets are not listed here; they need compartment attribution and
 # are handled by _score_compartment_oa.
 ANCHORS: dict[str, tuple[str, str | None]] = {
     "ACL": (_ACL, TEAR),
     "MCL": (_MCL, TEAR),
-    "Medial Meniscus": (_MED_MEN, "(" + TEAR + "|" + DEGEN + ")"),
-    "Lateral Meniscus": (_LAT_MEN, "(" + TEAR + "|" + DEGEN + ")"),
     "Effusion": (
         r"(joint effusion|effusion|joint fluid|fluid in the joint|articular fluid"
         r"|suprapatellar fluid|joint distension|hydrops|hydrarthrosis"
@@ -245,6 +348,14 @@ ANCHORS: dict[str, tuple[str, str | None]] = {
 }
 
 _COMPARTMENT_OA = {"Medial OA": "medial", "Lateral OA": "lateral", "PF OA": "pf"}
+
+# Menisci need tear-vs-degeneration separation, so they bypass ANCHORS.
+_MENISCUS = {"Medial Meniscus": _MED_MEN, "Lateral Meniscus": _LAT_MEN}
+
+# Targets whose reported severity is graded onto the score. Effusion is the clear
+# case: "trace fluid" and "massive effusion" are the same binary label but very
+# different images, and the metric rewards ranking them apart.
+_SEVERITY_GRADED = {"Effusion", "Synovitis", "Contusion"}
 
 
 _SENT_SPLIT = re.compile(r"[.;:\n]|(?:\s-\s)")
@@ -296,16 +407,103 @@ def _is_negated(
     return False
 
 
-def _score_simple(text: str, anchor: str, finding: str | None) -> float:
-    """1.0 if an affirmed mention of the target exists in any sentence, else 0.0."""
+def _severity_of(sentence: str) -> float:
+    """Strongest severity qualifier present in a sentence, else the default."""
+    for weight, pattern in SEVERITY:
+        if re.search(pattern, sentence):
+            return weight
+    return DEFAULT_SEVERITY
+
+
+def _hedged(sentence: str) -> bool:
+    return bool(re.search(HEDGE, sentence))
+
+
+def _score_simple(
+    text: str, anchor: str, finding: str | None, graded: bool = False
+) -> float:
+    """Score an affirmed mention of the target across all sentences.
+
+    Returns the strongest score found. With ``graded`` the score carries the
+    reported severity ("trace" vs "massive"); otherwise an affirmed mention
+    scores 1.0. A hedged mention is discounted either way.
+    """
+    best = 0.0
     for sentence in sentences(text):
         if finding is not None and not re.search(finding, sentence):
             continue
         pre, post = _negation_cues(sentence)
         for m in re.finditer(anchor, sentence):
-            if not _is_negated(sentence, m.start(), m.end(), pre, post):
-                return 1.0
-    return 0.0
+            if _is_negated(sentence, m.start(), m.end(), pre, post):
+                continue
+            score = _severity_of(sentence) if graded else 1.0
+            if _hedged(sentence):
+                score *= HEDGE_FACTOR
+            best = max(best, score)
+            break
+    return best
+
+
+def _score_meniscus(text: str, anchor: str) -> float:
+    """Meniscal tear, kept distinct from meniscal degeneration.
+
+    Intrasubstance degeneration (Stoller grade 1-2, "mucoid", "myxoid") is a
+    different entity from a tear and the gold labels treat it as such: reports
+    reading "increased signal not contacting the articular surface" are labelled
+    negative, while "radial tear of the posterior root" is positive. Grade 3
+    signal is by definition a tear, because it reaches the articular surface.
+    """
+    best = 0.0
+    for sentence in sentences(text):
+        anchored = [
+            m for m in re.finditer(anchor, sentence)
+        ]
+        if not anchored:
+            continue
+        # "signal that does NOT contact the articular surface" describes a real
+        # degenerative meniscus. The negation belongs to the surface clause, not
+        # to the meniscus, so it must be resolved before the anchor is tested --
+        # otherwise the nearby "not" suppresses the finding entirely.
+        if re.search(SURFACE_NO_REACH, sentence) and (
+            re.search(INTRASUBSTANCE_SIGNAL, sentence) or re.search(DEGEN, sentence)
+        ):
+            best = max(best, DEGEN_ONLY)
+            continue
+
+        pre, post = _negation_cues(sentence)
+        affirmed = [
+            m for m in anchored
+            if not _is_negated(sentence, m.start(), m.end(), pre, post)
+        ]
+        if not affirmed:
+            continue
+
+        # Decisive tear evidence, in descending order of certainty.
+        tear = bool(
+            re.search(MENISCUS_TEAR_PATTERN, sentence)
+            or re.search(MENISCUS_EXTRUSION, sentence)
+            or re.search(GRADE_3, sentence)
+        )
+        # An explicit tear word counts unless the sentence simultaneously says the
+        # signal stops short of the articular surface, which describes degeneration.
+        if not tear and re.search(TEAR, sentence):
+            tear = not re.search(SURFACE_NO_REACH, sentence)
+        # Signal reaching the surface is a tear even when the word is absent.
+        if not tear and re.search(SURFACE_REACH, sentence):
+            tear = not re.search(SURFACE_NO_REACH, sentence)
+
+        if tear:
+            score = HEDGE_FACTOR if _hedged(sentence) else 1.0
+        elif (
+            re.search(DEGEN, sentence)
+            or re.search(GRADE_12, sentence)
+            or re.search(INTRASUBSTANCE_SIGNAL, sentence)
+        ):
+            score = DEGEN_ONLY
+        else:
+            continue
+        best = max(best, score)
+    return best
 
 
 # Phrases that name a femorotibial structure explicitly. Used to disambiguate a
@@ -356,13 +554,22 @@ def _score_compartment_oa(text: str, side: str) -> float:
 
 
 def label_report(report: str) -> dict[str, float]:
-    """Extract weak labels for all 12 targets from one report."""
+    """Extract graded weak labels in [0, 1] for all 12 targets from one report.
+
+    Scores are deliberately not thresholded: they are training targets for a
+    model scored by ROC AUC, so preserving "large effusion" > "trace effusion"
+    and "radial tear" > "mucoid degeneration" is worth more than a crisp 0/1.
+    """
     text = normalize(report)
     out: dict[str, float] = {}
     for target in TARGETS:
         if target in _COMPARTMENT_OA:
             out[target] = _score_compartment_oa(text, _COMPARTMENT_OA[target])
+        elif target in _MENISCUS:
+            out[target] = _score_meniscus(text, _MENISCUS[target])
         else:
             anchor, finding = ANCHORS[target]
-            out[target] = _score_simple(text, anchor, finding)
+            out[target] = _score_simple(
+                text, anchor, finding, graded=target in _SEVERITY_GRADED
+            )
     return out

@@ -1,8 +1,11 @@
 data/
 artifacts/
+prep/
+work/
 *.pt
 *.ckpt
 __pycache__/
 .venv/
 kaggle.json
 .claude/
+.kaggle_stage/

@@ -65,36 +65,60 @@ gold studies with `scripts/eval_labeler.py`:
 | + OA reworked around chondral findings | 0.701 | 0.607 | — |
 | + effusion/synovitis vocabulary | 0.711 | 0.621 | — |
 | + Greek lexicon | 0.720 | 0.633 | 19.0% |
-| + sentence-scoped bidirectional negation (Phase 0) | **0.722** | **0.641** | 19.4% |
+| + sentence-scoped bidirectional negation (Phase 0) | 0.722 | 0.641 | 19.4% |
+| + graded scores: severity, hedging, tear-vs-degeneration (Phase 1) | **0.738** | 0.639 | 19.4% |
 
-### Phase 0 — correctness rewrite
+### Phase 1 — graded labels instead of binary
 
-An audit against the full 4407-report corpus found four defects that corrupted
-labels corpus-wide. All are now fixed and pinned by `tests/test_reports.py`
-(16 cases, all passing):
+The metric is ROC AUC, which scores *ranking*, so collapsing "massive effusion"
+and "trace fluid" onto the same 1.0 throws away usable signal. `label_report`
+now returns a score in [0, 1] built from three axes, and the image model trains
+on those scores directly with soft-target BCE.
 
-- **`roto` was unbounded**, firing inside "p**roto**col" and "p**roto**n density" —
-  present in 19.2% of reports, flipping 126 meniscus labels. Now `\broto\b`.
-- **Negation was backward-only**, so "medial meniscus tear *is not identified*"
-  scored positive. Replaced with NegEx-style scoping: cues are split into
-  forward-scoping (English/Romance/Greek: "no tear of...") and backward-scoping
-  (Turkish/Russian are verb-final: "yırtığı **yoktur**", "разрыв **не выявлен**"),
-  with scope released by terminators ("no effusion **but** there is a tear").
-- **Negation bled across sentences** — "ACL tear is not seen. Medial meniscus tear
-  is present." lost the meniscus label. Negation is now sentence-scoped.
-- **Compartment OA crossed clause boundaries** — "lateral compartment shows
-  osteoarthritis **while** the medial compartment is normal" credited Medial OA.
-  Attribution is now sub-clause scoped, and all OA matches are considered, not
-  just the first.
+**Tear vs degeneration (Medial Meniscus 0.639 -> 0.712).** The labeler counted
+any degenerative finding as a meniscus tear. Reading the gold cases shows these
+are different entities and the labels treat them so:
 
-Headline AUC moved only 0.720 → 0.722, which is the expected outcome at n=58 —
-but ACL jumped 0.78 → 0.89 and the corpus-wide label corruption is gone. This is
-a correctness fix whose value shows up in the 4349 weak labels that train the
-image model, not in the 58-study gold score.
+- gold-negative: "mucoid degeneration", "increased signal ... that does **not**
+  contact the articular surface", Stoller grade 1-2
+- gold-positive: "radial tear of the posterior root", "bucket-handle tear",
+  "yırtık", grade **3** signal
 
-Current per-target AUC: MCL 0.85, ACL 0.78, Lateral Meniscus 0.78, Baker's 0.78,
-Contusion 0.75, Fracture 0.73, PF OA 0.71, Medial OA 0.70, Synovitis 0.66,
-Lateral OA 0.65, Medial Meniscus 0.63, Effusion 0.63.
+Grade 3 is by definition a tear because it reaches the articular surface, so the
+rule is clinical rather than fitted: a named tear morphology, extrusion, grade 3,
+or signal reaching the surface scores 1.0; plain intrasubstance degeneration
+scores 0.30.
+
+One scoping bug fell out of this. In "signal that does **not** contact the
+articular surface", the `not` was negating the *meniscus* rather than the
+*surface contact*, so the finding vanished entirely. Surface-contact phrasing is
+now resolved before the anchor's negation is tested.
+
+**Severity (Effusion 0.660 -> 0.780).** Reading the contexts first suggested
+severity would *not* help: "small joint effusion" and "leve derrame" appear in
+both gold-positive and gold-negative studies, and "moderate joint effusion" is
+gold-negative. That is true for a binary decision — precision at threshold is
+unchanged — but it is the wrong test for this metric. Grading trace/small/
+moderate/large onto 0.35/0.55/0.80/1.00 lifts AUC by 0.12 because it ranks
+correctly even where it cannot separate.
+
+**Hedging.** "possible tear" scores 0.65 of a stated one.
+
+#### These gains are structural, not tuned
+
+Sweeping the three constants introduced here moves macro AUC by less than 0.01
+in total:
+
+| constant | range swept | macro AUC range |
+|---|---|---|
+| `DEGEN_ONLY` | 0.0 – 0.5 | 0.7381 – 0.7386 |
+| `HEDGE_FACTOR` | 0.5 – 1.0 | 0.7381 – 0.7384 |
+| `DEFAULT_SEVERITY` | 0.5 – 0.9 | 0.7301 – 0.7391 |
+
+`DEGEN_ONLY` is flat between 0.1 and 0.5 for the reason AUC is the metric: only
+the *ordering* of degeneration below a stated tear matters, not the value. So the
+gain came from separating the categories, not from picking a number — which is
+what the n=58 caveat below demands.
 
 ### What moved the needle
 
@@ -123,9 +147,23 @@ cannot observe it.
 
 ### Still weak
 
-- **Effusion (0.63)** — recall is fixed but precision is capped, because trace
-  effusion is mentioned in most reports while gold appears to track
-  *clinically significant* effusion. Needs severity grading (trace/minimal vs
-  moderate/large) rather than presence/absence.
-- **Medial Meniscus (0.63)** — likely needs the same treatment for
-  degenerative signal vs true tear.
+Both targets flagged here previously — Effusion and Medial Meniscus — were fixed
+in Phase 1. What remains:
+
+- **Lateral OA (0.61)** — the weakest target, and precision and recall are both
+  0.36, so this is not a threshold problem. Only 11 gold positives exist, so the
+  number itself is barely meaningful; the compartment-attribution logic is the
+  place to look, not the vocabulary.
+- **Synovitis (0.65)** — recall 0.41. Synovitis is often implied rather than
+  named ("enhancing synovium", "pannus", effusion with thickened capsule) and the
+  lexicon currently wants it stated.
+- **The gold ceiling.** Six targets now sit between 0.71 and 0.89 and the labeler
+  is approaching the point where the 58-study gold set cannot distinguish further
+  improvements from noise. Additional labeler work should be judged on corpus-level
+  coverage and on downstream image-model AUC, not on this set.
+
+### Where the remaining headroom is
+
+The labeler is no longer the bottleneck it was. At 0.738 macro AUC it is a usable
+teacher, and the open question is how much of that signal an image model can
+recover from pixels — which is what the rest of the pipeline exists to answer.
