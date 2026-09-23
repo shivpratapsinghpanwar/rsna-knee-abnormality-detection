@@ -9,3 +9,4 @@ __pycache__/
 kaggle.json
 .claude/
 .kaggle_stage/
+.kernel_stage/

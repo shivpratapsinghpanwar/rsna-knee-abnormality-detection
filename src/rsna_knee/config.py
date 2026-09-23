@@ -26,10 +26,20 @@ def _first_existing(*candidates: Path) -> Path:
 if ON_KAGGLE:
     RAW = Path("/kaggle/input") / COMPETITION
     WORK = Path("/kaggle/working")
-    # A preprocessed corpus attached as a second input dataset, when present.
-    PREP = _first_existing(
-        Path("/kaggle/input/rsna-knee-prep/prep"),
-        Path("/kaggle/input/rsna-knee-prep"),
+    # The preprocessed corpus, when notebook 01's output is attached as an input
+    # dataset. Notebook 01 itself has no such input and falls through to
+    # /kaggle/working/prep, which is what it writes and what gets saved.
+    # RSNA_KNEE_PREP overrides the search if the dataset is attached under a
+    # different slug.
+    # Notebook 01's output mounts at /kaggle/input/<kernel-slug>/, so its prep/
+    # directory is found there without creating a separate dataset by hand.
+    _prep_env = os.environ.get("RSNA_KNEE_PREP")
+    PREP = Path(_prep_env) if _prep_env else _first_existing(
+        *[
+            Path("/kaggle/input") / slug / sub
+            for slug in ("rsna-knee-preprocess", "rsna-knee-prep")
+            for sub in ("prep", "")
+        ],
         WORK / "prep",
     )
 else:
