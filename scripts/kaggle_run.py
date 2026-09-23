@@ -54,8 +54,20 @@ FOLDS = [0, 1, 2]
 
 def kernel_slug(stage: str, fold: int | None = None) -> str:
     if stage == "train":
-        return f"rsna-knee-train-f{fold}"
+        return f"rsna-knee-train-fold-{fold}"
     return f"rsna-knee-{stage}"
+
+
+def kernel_title(slug: str) -> str:
+    """A title that slugifies back to `slug`.
+
+    Kaggle derives the kernel's real slug from the *title*, not from the `id` in
+    the metadata -- an id of rsna-knee-train-f0 under the title
+    "RSNA Knee - train fold 0" silently created rsna-knee-train-fold-0 instead,
+    and every later lookup by id failed. Deriving the title from the slug makes
+    the two agree by construction.
+    """
+    return slug.replace("-", " ")
 
 
 def metadata(user: str, slug: str, title: str, nb: str, gpu: bool, net: bool,
@@ -133,11 +145,9 @@ def main() -> None:
         # near-identical notebooks in the repo.
         text = text.replace("FOLD = 0", f"FOLD = {args.fold}")
     (stage_dir / nb).write_text(text, encoding="utf-8")
-    title = (f"RSNA Knee - train fold {fold}" if fold is not None
-             else f"RSNA Knee - {args.stage}")
     (stage_dir / "kernel-metadata.json").write_text(
-        json.dumps(metadata(user, slug, title, nb, gpu, net, datasets, kernels),
-                   indent=2)
+        json.dumps(metadata(user, slug, kernel_title(slug), nb, gpu, net,
+                            datasets, kernels), indent=2)
     )
 
     srcs = [f"{user}/{CODE_DS}"] + [f"{user}/{s}" for s in datasets + kernels]
