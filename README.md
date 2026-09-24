@@ -111,8 +111,14 @@ edit that rather than the `.ipynb` files.
 
 Each stage moves its output to the next as a **kernel source**, so nothing has to
 be re-uploaded: notebook 01's corpus mounts into 02, and each fold's checkpoints
-mount into 03. Folds get separate kernel ids (`rsna-knee-train-f0`, `-f1`, ...)
-because pushing them to one id would overwrite earlier weights.
+mount into 03. Folds get separate kernel ids (`rsna-knee-train-fold-0`, `-fold-1`,
+...) because pushing them to one id would overwrite earlier weights.
+
+> **Kaggle names a kernel from its title, not the `id` you supply.** An id of
+> `rsna-knee-train-f0` under the title "RSNA Knee - train fold 0" silently
+> creates `rsna-knee-train-fold-0`, and later lookups by id fail with a
+> *permissions* error that reads like broken auth. `kaggle_run.py` derives the
+> title from the slug so the two cannot disagree.
 
 Both long stages stop under their own `--max-minutes` budget rather than being
 killed at Kaggle's session limit, which can discard the output entirely.
@@ -148,8 +154,8 @@ run is resumable, so re-running once the window clears picks up where it left of
 - **Labeler** — done and validated: macro AUC **0.738** on the 58 gold studies,
   up from 0.663 at v1. 24 regression tests.
 - **Corpus** — built on Kaggle: **17,071 mosaics over all 4,407 studies, 8.86 GB**.
-- **Image model** — trained on the full corpus. Folds 0 and 1 reach weak AUC
-  **0.779 / 0.780** over ~880 held-out studies, and **0.79 / 0.77 gold AUC**.
+- **Image model** — trained on the full corpus. Folds 0-2 reach weak AUC
+  **0.780 mean** over ~880 held-out studies, and **0.776 mean gold AUC**.
   The model beats its own teacher: the labeler scores 0.738 on gold, so the
   network learned anatomy rather than copying the report parser. See
   [FINDINGS.md](FINDINGS.md) for the per-target breakdown.
@@ -157,4 +163,5 @@ run is resumable, so re-running once the window clears picks up where it left of
   the meniscus targets at ~0.75, are where the next gain is.
 - **Local dev corpus** — 18 mosaics across 5 studies, enough to exercise the code
   but not to train. Further fetching is blocked by the download quota above.
-- **Next** — fold 2, then `kaggle_run.py submit` for the leaderboard entry.
+- **Submission** — `kaggle_run.py submit` runs offline and writes a valid
+  `submission.csv`; not yet entered on the leaderboard.

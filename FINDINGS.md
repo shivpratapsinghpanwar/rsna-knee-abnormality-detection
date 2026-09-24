@@ -169,8 +169,10 @@ Trained on the full 17,071-mosaic corpus on Kaggle. resnet34 backbone, 8 epochs,
 
 | fold | best weak AUC | gold AUC at that epoch |
 |---|---|---|
-| 0 | 0.779 (epoch 5) | **0.793** |
+| 0 | 0.779 (epoch 5) | 0.793 |
 | 1 | 0.780 (epoch 7) | 0.766 |
+| 2 | 0.780 (epoch 6) | 0.768 |
+| **mean** | **0.780** | **0.776** |
 
 Two things are worth stating carefully, because they are easy to overclaim.
 
@@ -183,8 +185,11 @@ mistakes. That is the single most important result so far.
 **But the gold figure is noisy.** Only 58 studies carry gold labels, so roughly
 12 land in any one fold. The 0.793 and 0.766 differ by more than the folds
 really do. The stable number is the weak AUC over ~880 held-out studies, and the
-two folds agree there to within 0.001 (0.779 vs 0.780), which is the actual
-evidence that the result is not a lucky split.
+three folds agree there to within 0.001 (0.779 / 0.780 / 0.780), which is the
+actual evidence that the result is not a lucky split. Gold AUC across the same
+three folds spans 0.766-0.793, a range of 0.027 on identical training -- that
+spread is the noise floor of a 12-study sample, and no claim should rest on
+differences smaller than it.
 
 ### Per-target, fold 0 (weak AUC, ~880 held-out studies)
 
@@ -216,6 +221,26 @@ comparable. What the shape shows is still informative:
   finding on a single coronal sequence. This is where the next gain is.
 - **ACL drops (0.886 -> 0.795)** relative to the labeler. ACL tears are stated
   plainly in reports, so the text was easy; the images are harder.
+
+## Submission path
+
+Verified end to end on Kaggle with internet disabled, which is what makes the
+run valid as a code-competition entry:
+
+- all three fold checkpoints loaded from their own kernel outputs
+- 3 test studies, 11 series selected, raw DICOM read and mosaicked at run time
+- `submission.csv` matches `sample_submission.csv` exactly: same 13 columns in
+  order, ids in the order `test.csv` gives them, no nulls, values in [0, 1]
+
+Predictions are **rank-averaged** across folds rather than probability-averaged,
+since ROC AUC only sees ordering and ranks keep one badly calibrated fold from
+dominating. On the 3-study public placeholder this quantises the output to
+multiples of 1/6 and produces ties; on the hidden test set, which is far larger,
+that resolution loss disappears.
+
+The preprocessing in this path is the same code that built the training corpus,
+so there is no train/serve skew -- the test tensor is round-tripped through the
+mosaic representation rather than merely resembling it.
 
 ### Where the remaining headroom is
 
