@@ -148,15 +148,26 @@ LABEL = [
     "# rule-based labeller is scored by, so the two are directly comparable before\n"
     "# any GPU time goes into the remaining 4349.",
     BOOT,
-    '''MODEL = "Qwen/Qwen2.5-7B-Instruct"
-BATCH = 8''',
+    '''import subprocess, sys
+# bitsandbytes is not always in the Kaggle image and 4-bit is not optional here:
+# a 7B model in 16-bit weights is ~14 GB against the T4's 14.56 GB, which loads
+# and then OOMs as soon as attention allocates.
+try:
+    import bitsandbytes  # noqa: F401
+except ImportError:
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "bitsandbytes"],
+                   check=False)
+
+MODEL = "Qwen/Qwen2.5-7B-Instruct"
+BATCH = 4
+QUANT = "--load-4bit"''',
     '''# Validation pass: 58 reports, a couple of minutes.
-!cd {CODE} && python scripts/llm_label.py --gold-only --model {MODEL} \\
+!cd {CODE} && python scripts/llm_label.py --gold-only --model {MODEL} {QUANT} \\
     --batch {BATCH} --out /kaggle/working/llm_labels_gold.csv''',
     '''# Score the LLM labels against gold, side by side with the rule-based ones.
 !cd {CODE} && python scripts/eval_labeler.py --llm /kaggle/working/llm_labels_gold.csv''',
     '''# Full corpus. Only worth the GPU time if the gold score above beat 0.738.
-!cd {CODE} && python scripts/llm_label.py --model {MODEL} --batch {BATCH} \\
+!cd {CODE} && python scripts/llm_label.py --model {MODEL} {QUANT} --batch {BATCH} \\
     --out /kaggle/working/llm_labels.csv''',
 ]
 

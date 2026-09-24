@@ -154,43 +154,73 @@ def main() -> None:
     tok = AutoTokenizer.from_pretrained(args.model, padding_side="left")
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
-    kw = dict(dtype=torch.bfloat16, device_map="auto")
+
+    # A Kaggle T4 has 14.56 GB and no bfloat16 tensor cores. A 7B model in 16-bit
+    # weights is ~14 GB, which loads and then OOMs the moment attention allocates
+    # -- that is exactly how the first run died. 4-bit brings it to ~5 GB and
+    # leaves room for a real batch, and fp16 is the right dtype on Turing.
+    compute_dtype = torch.float16
+    kw: dict = dict(dtype=compute_dtype, device_map="auto")
     if args.load_4bit:
         from transformers import BitsAndBytesConfig
 
         kw["quantization_config"] = BitsAndBytesConfig(
-            load_in_4bit=True, bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_quant_type="nf4",
+            load_in_4bit=True, bnb_4bit_compute_dtype=compute_dtype,
+            bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
         )
     model = AutoModelForCausalLM.from_pretrained(args.model, **kw)
     model.eval()
+    if torch.cuda.is_available():
+        free, total = torch.cuda.mem_get_info()
+        print(f"GPU: {torch.cuda.get_device_name(0)}  "
+              f"{free/1e9:.1f}/{total/1e9:.1f} GB free after load")
 
     rows = list(done.values())
     import time
 
     t0 = time.time()
-    for start in range(0, len(todo), args.batch):
-        chunk = todo.iloc[start:start + args.batch]
+
+    def run(frame) -> list[str]:
         prompts = [
             tok.apply_chat_template(build_prompt(r), tokenize=False,
                                     add_generation_prompt=True)
-            for r in chunk[REPORT_COL]
+            for r in frame[REPORT_COL]
         ]
         enc = tok(prompts, return_tensors="pt", padding=True,
-                  truncation=True, max_length=4096).to(model.device)
+                  truncation=True, max_length=3072).to(model.device)
         with torch.no_grad():
             gen = model.generate(**enc, max_new_tokens=64, do_sample=False,
                                  pad_token_id=tok.pad_token_id)
-        outs = tok.batch_decode(gen[:, enc["input_ids"].shape[1]:],
+        return tok.batch_decode(gen[:, enc["input_ids"].shape[1]:],
                                 skip_special_tokens=True)
+
+    batch = args.batch
+    start = 0
+    while start < len(todo):
+        chunk = todo.iloc[start:start + batch]
+        try:
+            outs = run(chunk)
+        except torch.OutOfMemoryError:
+            # Report length varies a lot (52 to 4743 chars), so one unlucky batch
+            # can OOM where the rest are fine. Halve and retry rather than lose
+            # the run; 4407 reports is too long to restart casually.
+            torch.cuda.empty_cache()
+            if batch > 1:
+                batch = max(1, batch // 2)
+                print(f"  OOM -- retrying with batch {batch}", flush=True)
+                continue
+            print("  OOM at batch 1; skipping this report", flush=True)
+            outs = [""] * len(chunk)
         for sid, text in zip(chunk[ID_COL], outs):
             rows.append({ID_COL: sid, **parse(text)})
+        start += len(chunk)
 
         n = len(rows) - len(done)
         el = time.time() - t0
         rate = n / el if el else 0
         eta = (len(todo) - n) / rate / 60 if rate else 0
-        print(f"  {n}/{len(todo)}  {rate:.2f}/s  eta {eta:.0f}m", flush=True)
+        print(f"  {n}/{len(todo)}  {rate:.2f}/s  eta {eta:.0f}m  batch={batch}",
+              flush=True)
         pd.DataFrame(rows).to_csv(out_path, index=False)
 
     df = pd.DataFrame(rows)
