@@ -88,12 +88,15 @@ TRAIN = [
     '''!cd {CODE} && python scripts/build_weak_labels.py''',
     '''FOLD = 0
 BACKBONE = "resnet34"
+BATCH = 2
+POSW = 0
 # The MIL structure feeds MAX_SERIES * SLICES = 64 images per study, so batch 2
-# is already 128 images per forward. Heavier backbones need batch 1 and more
-# accumulation rather than a bigger batch.
+# is already 128 images per forward at 384. A heavier backbone needs batch 1 and
+# more accumulation rather than a bigger batch -- the multiplier, not the model,
+# is what fills the GPU here.
 !cd {CODE} && python scripts/train.py --fold {FOLD} --epochs 8 --backbone {BACKBONE} \\
-    --batch 2 --accum 8 --workers 2 --max-minutes 480 \\
-    --out /kaggle/working/models''',
+    --batch {BATCH} --accum {16 // BATCH} --workers 2 --max-minutes 480 \\
+    --pos-weight-cap {POSW} --out /kaggle/working/models''',
     '''import json, glob
 for h in sorted(glob.glob("/kaggle/working/models/*_history.json")):
     print(h)

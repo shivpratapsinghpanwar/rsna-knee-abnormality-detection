@@ -37,7 +37,9 @@ from rsna_knee.data import (  # noqa: E402
     KneeStudyDataset, collate, index_corpus, make_folds,
 )
 from rsna_knee.labels import TARGETS  # noqa: E402
-from rsna_knee.model import KneeStudyModel, masked_bce  # noqa: E402
+from rsna_knee.model import (  # noqa: E402
+    KneeStudyModel, masked_bce, prevalence_pos_weight,
+)
 
 
 def macro_auc(y: np.ndarray, p: np.ndarray) -> tuple[float, dict[str, float]]:
@@ -84,6 +86,9 @@ def main() -> None:
     # best checkpoint so far is already written and the run is still useful.
     ap.add_argument("--max-minutes", type=float, default=0,
                     help="stop after the epoch that crosses this (0 = no limit)")
+    ap.add_argument("--pos-weight-cap", type=float, default=0,
+                    help="inverse-prevalence positive weighting, capped here "
+                         "(0 disables). Aimed at the rare targets under macro AUC")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -128,6 +133,13 @@ def main() -> None:
     )
     scaler = torch.amp.GradScaler(device.type, enabled=amp)
 
+    pos_w = None
+    if args.pos_weight_cap:
+        rates = (tr_df[[f"weak_{t}" for t in TARGETS]].to_numpy() >= 0.5).mean(0)
+        pos_w = prevalence_pos_weight(rates, args.pos_weight_cap, device)
+        print("pos_weight:", {t: round(float(w), 2)
+                              for t, w in zip(TARGETS, pos_w)})
+
     gold_cols = [f"gold_{t}" for t in TARGETS]
     out_dir = Path(args.out) if args.out else WORK / "models"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -144,7 +156,8 @@ def main() -> None:
             vol, mask = vol.to(device, non_blocking=True), mask.to(device)
             slots, target = slots.to(device), target.to(device)
             with torch.autocast(device.type, torch.float16, enabled=amp):
-                loss = masked_bce(model(vol, mask, slots), target) / args.accum
+                loss = masked_bce(model(vol, mask, slots), target,
+                                  pos_weight=pos_w) / args.accum
             scaler.scale(loss).backward()
             if (step + 1) % args.accum == 0:
                 scaler.unscale_(opt)

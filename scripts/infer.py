@@ -93,6 +93,21 @@ def to_model_input(vol_u8: np.ndarray, size: int) -> np.ndarray:
     return (vol_u8.astype(np.float32) / 255.0 - IMAGENET_MEAN) / IMAGENET_STD
 
 
+# Test-time augmentation. Horizontal flip is absent for the same reason it is
+# absent from training: six of the twelve targets are side-specific, and on
+# coronal and axial images image-left/right *is* medial/lateral, so a flip
+# relabels the anatomy. These transforms leave laterality alone.
+TTA = {
+    "none": lambda v: v,
+    # A small translation, matching the padded random crop used in training.
+    "shift": lambda v: np.roll(v, (2, 2), axis=(-2, -1)),
+    # Re-sample the stack one slice over; the 16 slices are a subsample of ~33,
+    # so this genuinely shows the model different anatomy rather than the same
+    # pixels twice.
+    "slice": lambda v: np.roll(v, 1, axis=-3),
+}
+
+
 def load_models(paths: list[Path], device) -> list[tuple[KneeStudyModel, int]]:
     """Load checkpoints with the input size each was trained at.
 
@@ -121,6 +136,8 @@ def main() -> None:
     ap.add_argument("--batch", type=int, default=2)
     ap.add_argument("--from-prep", action="store_true",
                     help="read preprocessed mosaics instead of raw DICOM")
+    ap.add_argument("--tta", default="none",
+                    help="comma-separated TTA transforms: " + ",".join(TTA))
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -151,6 +168,11 @@ def main() -> None:
     # Decode each study once at the largest size any model wants, then feed every
     # model a resize of those same pixels.
     read_size = max(size for _, size in models)
+    tta = [t.strip() for t in args.tta.split(",") if t.strip()]
+    unknown = [t for t in tta if t not in TTA]
+    if unknown:
+        raise SystemExit(f"unknown TTA {unknown}; choose from {sorted(TTA)}")
+    print(f"TTA: {tta}")
     per_model = [[] for _ in models]
     batch: list[tuple[np.ndarray, np.ndarray]] = []
 
@@ -161,14 +183,19 @@ def main() -> None:
         msk = torch.from_numpy(np.stack([b[1] for b in batch])).to(device)
         slots = torch.arange(MAX_SERIES, device=device).expand(len(batch), MAX_SERIES)
         with torch.no_grad(), torch.autocast(device.type, torch.float16, enabled=amp):
-            cache: dict[int, torch.Tensor] = {}
+            cache: dict[tuple[int, str], torch.Tensor] = {}
             for k, (m, size) in enumerate(models):
-                if size not in cache:
-                    cache[size] = torch.from_numpy(
-                        np.stack([to_model_input(v, size) for v in raw])
-                    ).to(device)
-                out = m(cache[size], msk, slots)
-                per_model[k].append(torch.sigmoid(out.float()).cpu().numpy())
+                acc = None
+                for name in tta:
+                    key = (size, name)
+                    if key not in cache:
+                        aug = TTA[name](raw)
+                        cache[key] = torch.from_numpy(
+                            np.stack([to_model_input(v, size) for v in aug])
+                        ).to(device)
+                    out = torch.sigmoid(m(cache[key], msk, slots).float())
+                    acc = out if acc is None else acc + out
+                per_model[k].append((acc / len(tta)).cpu().numpy())
         batch.clear()
 
     for i, study in enumerate(ids, 1):

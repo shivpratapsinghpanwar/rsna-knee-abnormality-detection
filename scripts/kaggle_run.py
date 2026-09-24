@@ -55,10 +55,9 @@ STAGES = {
 FOLDS = [0, 1, 2]
 
 
-def kernel_slug(stage: str, fold: int | None = None) -> str:
-    if stage == "train":
-        return f"rsna-knee-train-fold-{fold}"
-    return f"rsna-knee-{stage}"
+def kernel_slug(stage: str, fold: int | None = None, suffix: str = "") -> str:
+    base = f"rsna-knee-train-fold-{fold}" if stage == "train" else f"rsna-knee-{stage}"
+    return f"{base}-{suffix}" if suffix else base
 
 
 def kernel_title(slug: str) -> str:
@@ -102,6 +101,12 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("stage", choices=sorted(STAGES))
     ap.add_argument("--fold", type=int, default=0)
+    ap.add_argument("--backbone", default="", help="train: timm backbone name")
+    ap.add_argument("--batch", type=int, default=0, help="train: studies per step")
+    ap.add_argument("--posw", type=float, default=-1,
+                    help="train: inverse-prevalence positive weight cap")
+    ap.add_argument("--suffix", default="",
+                    help="append to the kernel slug, to run variants side by side")
     ap.add_argument("--status", action="store_true", help="only report status")
     ap.add_argument("--all-folds", action="store_true",
                     help="with --status on train: report every fold")
@@ -115,7 +120,7 @@ def main() -> None:
     api.authenticate()
     user = api.config_values["username"]
     fold = args.fold if args.stage == "train" else None
-    slug = kernel_slug(args.stage, fold)
+    slug = kernel_slug(args.stage, fold, args.suffix)
     ref = f"{user}/{slug}"
 
     if args.status:
@@ -144,9 +149,33 @@ def main() -> None:
 
     text = src.read_text(encoding="utf-8")
     if args.stage == "train":
-        # The notebook declares FOLD = 0; rewrite it rather than keeping three
-        # near-identical notebooks in the repo.
-        text = text.replace("FOLD = 0", f"FOLD = {args.fold}")
+        # The notebook declares its knobs as plain assignments. Edit them through
+        # the parsed notebook, not with a regex over the raw file: the .ipynb is
+        # JSON, so a string like BACKBONE = "resnet34" is stored with escaped
+        # quotes and a naive substitution corrupts the document.
+        subs: dict[str, str] = {"FOLD": str(args.fold)}
+        if args.backbone:
+            subs["BACKBONE"] = repr(args.backbone)
+        if args.batch:
+            subs["BATCH"] = str(args.batch)
+        if args.posw >= 0:
+            subs["POSW"] = str(args.posw)
+
+        doc = json.loads(text)
+        applied = {k: False for k in subs}
+        for cell in doc["cells"]:
+            for i, line in enumerate(cell.get("source", [])):
+                for key, val in subs.items():
+                    if applied[key] or not line.startswith(f"{key} = "):
+                        continue
+                    end = "\n" if line.endswith("\n") else ""
+                    cell["source"][i] = f"{key} = {val}{end}"
+                    applied[key] = True
+        missing = [k for k, ok in applied.items() if not ok]
+        if missing:
+            raise SystemExit(f"could not set {missing} in {nb}")
+        text = json.dumps(doc, indent=1)
+        print(f"  config: {subs}")
     (stage_dir / nb).write_text(text, encoding="utf-8")
     (stage_dir / "kernel-metadata.json").write_text(
         json.dumps(metadata(user, slug, kernel_title(slug), nb, gpu, net,

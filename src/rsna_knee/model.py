@@ -137,19 +137,40 @@ class KneeStudyModel(nn.Module):
 
 
 def masked_bce(logits: torch.Tensor, targets: torch.Tensor,
-               weight: torch.Tensor | None = None) -> torch.Tensor:
+               weight: torch.Tensor | None = None,
+               pos_weight: torch.Tensor | None = None) -> torch.Tensor:
     """BCE against soft targets, ignoring NaN entries.
 
     Weak labels are graded in [0, 1] rather than binary, and soft-target BCE is
     the right objective: it trains "large effusion" harder than "trace effusion"
     instead of collapsing both to 1.
+
+    `pos_weight` upweights the positive term per target. The metric is *macro*
+    AUC, so every target counts 1/12 regardless of how rare it is -- but twelve
+    targets share one backbone, and at 4.7% positive MCL contributes almost
+    nothing to an unweighted loss. It is the worst-scoring target at 0.611, and
+    lifting it to 0.75 would be worth more macro AUC (+0.012) than any plausible
+    gain on the targets already above 0.85.
     """
     valid = torch.isfinite(targets)
     if not valid.any():
         return logits.sum() * 0.0
     loss = F.binary_cross_entropy_with_logits(
-        logits, torch.nan_to_num(targets), reduction="none"
+        logits, torch.nan_to_num(targets), reduction="none",
+        pos_weight=pos_weight,
     )
     if weight is not None:
         loss = loss * weight
     return (loss * valid).sum() / valid.sum().clamp(min=1)
+
+
+def prevalence_pos_weight(rates, cap: float = 8.0, device=None) -> torch.Tensor:
+    """Inverse-prevalence weights, capped so a rare target cannot dominate.
+
+    (1 - p) / p is the weight that equalises the positive and negative terms.
+    Uncapped that is ~20x for MCL, which destabilises training and drags the
+    common targets down; 8 recovers most of the benefit without that.
+    """
+    p = torch.as_tensor(list(rates), dtype=torch.float32, device=device)
+    p = p.clamp(min=1e-3, max=1 - 1e-3)
+    return ((1 - p) / p).clamp(max=cap)
