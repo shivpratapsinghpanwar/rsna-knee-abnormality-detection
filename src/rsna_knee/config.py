@@ -82,17 +82,34 @@ CSV = RAW  # train.csv etc. sit alongside the series directories
 
 # --- preprocessing geometry -------------------------------------------------
 #
-# Each series is reduced to a fixed grid of slices and stored as one lossless
-# PNG mosaic. Keeping it to a single ordinary image file per series means no
-# custom container, and PNG on 8-bit MRI is roughly half the size of raw uint8.
+# Each series is reduced to a fixed grid of slices and stored as one mosaic image
+# file. One ordinary image per series means no custom container to maintain.
 #
-# 16 slices at 256x256 tiled 4x4 gives a 1024x1024 mosaic, about 300-500 KB per
-# series. Across the ~17.6k series we actually keep that is well inside both the
-# Kaggle 20 GB output cap and local disk.
+# Resolution is the highest-value knob in this pipeline. Native slices run about
+# 512x512 up to 960x960, so the first corpus at 256x256 discarded roughly 75% of
+# the pixels -- and the findings that suffer most (meniscal tears, cartilage
+# thinning, an MCL sprain) are exactly the subtle ones we score worst on.
+#
+# The first corpus stored lossless PNG at 256 and came to 8.86 GB, close enough
+# to Kaggle's 20 GB notebook-output cap that raising resolution looked blocked.
+# It was not: JPEG at high quality is 3-4x smaller than PNG on already-8-bit
+# windowed MRI, and that compression artefact is negligible next to throwing
+# away three quarters of the pixels. Switching format buys the resolution.
+#
+#   256 PNG   1024x1024 mosaic   ~520 KB   8.9 GB    (first corpus)
+#   384 JPEG  1536x1536 mosaic   ~350 KB   ~6 GB     (current)
+#
+# RSNA_KNEE_SIZE overrides the resolution, so a second corpus can be built at a
+# different scale and ensembled with the first.
 SLICES = 16
-SIZE = 256
+SIZE = int(os.environ.get("RSNA_KNEE_SIZE", 384))
 GRID = 4
 assert GRID * GRID == SLICES
+
+# Storage format for the mosaic. JPEG quality 95 on 8-bit MRI is visually
+# lossless at a fraction of PNG's size; set RSNA_KNEE_EXT=.png to go back.
+MOSAIC_EXT = os.environ.get("RSNA_KNEE_EXT", ".jpg")
+MOSAIC_QUALITY = int(os.environ.get("RSNA_KNEE_QUALITY", 95))
 
 # Intensity windowing percentiles. MRI has no standard scale like CT Hounsfield
 # units, so each slice is windowed against its own robust range.

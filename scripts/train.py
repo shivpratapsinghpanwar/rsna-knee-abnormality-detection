@@ -32,7 +32,7 @@ from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from rsna_knee.config import WORK  # noqa: E402
+from rsna_knee.config import SIZE, WORK  # noqa: E402
 from rsna_knee.data import (  # noqa: E402
     KneeStudyDataset, collate, index_corpus, make_folds,
 )
@@ -74,6 +74,8 @@ def main() -> None:
     ap.add_argument("--accum", type=int, default=4, help="gradient accumulation steps")
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--backbone", default="resnet34")
+    ap.add_argument("--size", type=int, default=SIZE,
+                    help="model input size; mosaics are rescaled to it if needed")
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--limit", type=int, default=0, help="debug: cap study count")
@@ -110,8 +112,8 @@ def main() -> None:
     va_df = labels[fold == args.fold].reset_index(drop=True)
     print(f"fold {args.fold}/{n_folds}: train {len(tr_df)}  val {len(va_df)}")
 
-    tr_ds = KneeStudyDataset(tr_df, corpus, train=True)
-    va_ds = KneeStudyDataset(va_df, corpus, train=False)
+    tr_ds = KneeStudyDataset(tr_df, corpus, train=True, size=args.size)
+    va_ds = KneeStudyDataset(va_df, corpus, train=False, size=args.size)
     tr_ld = DataLoader(tr_ds, batch_size=args.batch, shuffle=True,
                        num_workers=args.workers, collate_fn=collate,
                        pin_memory=amp, drop_last=len(tr_ds) > args.batch)
@@ -177,9 +179,12 @@ def main() -> None:
         if weak_auc > best:
             best = weak_auc
             torch.save(
+                # `size` travels with the weights: inference must build its
+                # tensor at the resolution the model was trained on, and that is
+                # what lets checkpoints from different corpora be ensembled.
                 dict(model=model.state_dict(), backbone=args.backbone,
                      fold=args.fold, weak_auc=weak_auc, epoch=epoch,
-                     targets=TARGETS),
+                     size=args.size, targets=TARGETS),
                 ckpt,
             )
         # Written every epoch, not just at the end, so a session killed partway

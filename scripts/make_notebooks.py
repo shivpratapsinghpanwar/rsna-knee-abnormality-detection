@@ -1,8 +1,8 @@
-"""Generate the three Kaggle notebooks from a single source of truth.
+"""Generate the Kaggle notebooks from a single source of truth.
 
 Keeping the cell text here rather than in checked-in .ipynb JSON means the
 notebooks cannot drift from the code they call, and a change to the pipeline is
-one edit rather than three.
+one edit rather than four.
 
     python scripts/make_notebooks.py
 """
@@ -15,9 +15,10 @@ from pathlib import Path
 OUT = Path(__file__).resolve().parents[1] / "notebooks"
 
 # Kaggle does not mount every input under one shape: a competition appears at
-# /kaggle/input/<slug>/ but a dataset at /kaggle/input/datasets/<user>/<slug>/.
-# The bootstrap has to locate its own source before it can import anything, so
-# it searches rather than assuming a path.
+# /kaggle/input/<slug>/, a dataset at /kaggle/input/datasets/<user>/<slug>/ and a
+# kernel output at /kaggle/input/notebooks/<user>/<slug>/. The bootstrap has to
+# locate its own source before it can import anything, so it searches rather than
+# assuming a path.
 BOOT = '''import sys, subprocess
 from pathlib import Path
 
@@ -31,8 +32,8 @@ sys.path.insert(0, str(CODE / "src"))
 sys.path.insert(0, str(CODE))
 print("CODE", CODE)
 
-# timm ships in the Kaggle image; the install is a fallback for images that
-# lack it, and cannot run in the offline submission notebook.
+# timm ships in the Kaggle image; the install is a fallback for images that lack
+# it, and cannot run in the offline submission notebook.
 try:
     import timm
 except ImportError:
@@ -41,46 +42,56 @@ except ImportError:
 
 import rsna_knee.config as cfg
 print("RAW ", cfg.RAW, cfg.RAW.exists())
-print("PREP", cfg.PREP, cfg.PREP.exists())'''
+print("PREP", cfg.PREP, cfg.PREP.exists())
+print("SIZE", cfg.SIZE, cfg.MOSAIC_EXT)'''
 
 PREPROCESS = [
-    "# 01 - Build the PNG mosaic corpus\n"
+    "# 01 - Build the mosaic corpus\n"
     "#\n"
-    "# Converts the mounted DICOM series into one lossless PNG mosaic per selected\n"
-    "# series (~8-9 GB for the full training set, inside the 20 GB output cap).\n"
+    "# Converts the mounted DICOM series into one mosaic image per selected series:\n"
+    "# 16 slices tiled 4x4, JPEG q95. At 384 that is ~8 GB for the full training\n"
+    "# set, inside the 20 GB notebook-output cap.\n"
+    "#\n"
+    "# JPEG rather than PNG is what pays for the resolution: on already-8-bit\n"
+    "# windowed MRI it is roughly half the size at 0.18% mean error, which is\n"
+    "# nothing next to the 75% of pixels a 256 corpus throws away.\n"
+    "#\n"
     "# This kernel's output mounts straight into the training notebook as a kernel\n"
-    "# source, so there is no dataset to build by hand.\n"
-    "#\n"
-    "# It is resumable: if the 12 h session limit hits, re-run and it skips what is\n"
-    "# already written.",
+    "# source, so there is no dataset to build by hand. It is resumable: if the\n"
+    "# 12 h session limit hits, re-run and it skips what is already written.",
     BOOT,
     '''!cd {CODE} && python scripts/build_weak_labels.py''',
-    '''# Full corpus. --max-minutes stops under Kaggle's 12 h session limit so the
-# finished mosaics are saved; re-run the notebook to resume from them.
+    '''# --max-minutes stops under Kaggle's session limit so the finished mosaics are
+# saved; a killed session can save nothing at all.
 !cd {CODE} && python scripts/preprocess_series.py --split train --workers 4 \\
     --max-minutes 660''',
     '''!cd {CODE} && python scripts/preprocess_series.py --split test --workers 4''',
     '''from pathlib import Path
 prep = Path("/kaggle/working/prep")
-pngs = list(prep.rglob("*.png"))
-size = sum(p.stat().st_size for p in pngs)
-print(f"{len(pngs)} mosaics, {size/1e9:.2f} GB")''',
+files = [p for p in prep.rglob("*") if p.suffix.lower() in (".jpg", ".png")]
+size = sum(p.stat().st_size for p in files)
+print(f"{len(files)} mosaics, {size/1e9:.2f} GB")''',
 ]
 
 TRAIN = [
     "# 02 - Train the study-level model\n"
     "#\n"
     "# Reads the mosaic corpus from notebook 01, mounted as a kernel source, and\n"
-    "# trains one fold. Each fold runs as its own kernel (rsna-knee-train-f0, -f1,\n"
-    "# ...), because pushing them all to one id would overwrite earlier weights.\n"
+    "# trains one fold. Each fold runs as its own kernel (rsna-knee-train-fold-0,\n"
+    "# -fold-1, ...), because pushing them all to one id would overwrite earlier\n"
+    "# weights.\n"
     "#\n"
     "# Validation reports two numbers: weak AUC over ~880 held-out studies (stable,\n"
-    "# used for checkpoint selection) and gold AUC over the handful of human-labelled\n"
-    "# studies in the fold (honest but very noisy).",
+    "# used for checkpoint selection) and gold AUC over the ~12 human-labelled\n"
+    "# studies in the fold (honest but very noisy - the noise floor is ~0.03).",
     BOOT,
     '''!cd {CODE} && python scripts/build_weak_labels.py''',
     '''FOLD = 0
-!cd {CODE} && python scripts/train.py --fold {FOLD} --epochs 8 --backbone resnet34 \\
+BACKBONE = "resnet34"
+# The MIL structure feeds MAX_SERIES * SLICES = 64 images per study, so batch 2
+# is already 128 images per forward. Heavier backbones need batch 1 and more
+# accumulation rather than a bigger batch.
+!cd {CODE} && python scripts/train.py --fold {FOLD} --epochs 8 --backbone {BACKBONE} \\
     --batch 2 --accum 8 --workers 2 --max-minutes 480 \\
     --out /kaggle/working/models''',
     '''import json, glob
@@ -96,7 +107,8 @@ SUBMIT = [
     "# No internet is used, so this is valid as a code-competition submission.\n"
     "#\n"
     "# The hidden test set is preprocessed here from raw DICOM by the same code\n"
-    "# path training used, so there is no train/serve skew.",
+    "# path training used, so there is no train/serve skew. Checkpoints carry the\n"
+    "# resolution they were trained at, so models from different corpora blend.",
     BOOT,
     '''from pathlib import Path
 # Each training fold ran as its own kernel, so its checkpoints mount under that
@@ -120,6 +132,31 @@ print(sub.shape)
 sub.head()''',
 ]
 
+LABEL = [
+    "# 04 - LLM report labeller\n"
+    "#\n"
+    "# The reports exist only at training time, so the labeller has no inference\n"
+    "# cost and can be as expensive as we like. That asymmetry is the main one in\n"
+    "# this competition, and the rule-based labeller does not exploit it: it tops\n"
+    "# out at 0.738 gold AUC because hand-written regex cannot cover 12 languages\n"
+    "# of hedged clinical prose.\n"
+    "#\n"
+    "# The 58 gold studies are scored first, through the same harness the\n"
+    "# rule-based labeller is scored by, so the two are directly comparable before\n"
+    "# any GPU time goes into the remaining 4349.",
+    BOOT,
+    '''MODEL = "Qwen/Qwen2.5-7B-Instruct"
+BATCH = 8''',
+    '''# Validation pass: 58 reports, a couple of minutes.
+!cd {CODE} && python scripts/llm_label.py --gold-only --model {MODEL} \\
+    --batch {BATCH} --out /kaggle/working/llm_labels_gold.csv''',
+    '''# Score the LLM labels against gold, side by side with the rule-based ones.
+!cd {CODE} && python scripts/eval_labeler.py --llm /kaggle/working/llm_labels_gold.csv''',
+    '''# Full corpus. Only worth the GPU time if the gold score above beat 0.738.
+!cd {CODE} && python scripts/llm_label.py --model {MODEL} --batch {BATCH} \\
+    --out /kaggle/working/llm_labels.csv''',
+]
+
 
 def notebook(cells: list[str]) -> dict:
     return {
@@ -127,7 +164,7 @@ def notebook(cells: list[str]) -> dict:
             {
                 "cell_type": "markdown" if i == 0 else "code",
                 "metadata": {},
-                "source": (c if i else c).splitlines(keepends=True),
+                "source": c.splitlines(keepends=True),
                 **({} if i == 0 else {"outputs": [], "execution_count": None}),
             }
             for i, c in enumerate(cells)
@@ -148,6 +185,7 @@ def main() -> None:
         ("01_preprocess.ipynb", PREPROCESS),
         ("02_train.ipynb", TRAIN),
         ("03_submit.ipynb", SUBMIT),
+        ("04_label.ipynb", LABEL),
     ]:
         # The leading markdown cell doubles as the notebook's title block.
         cells = [cells[0].replace("# ", "", 1)] + cells[1:]

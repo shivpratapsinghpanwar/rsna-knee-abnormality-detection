@@ -44,6 +44,9 @@ STAGES = {
     # DICOM, so it needs the weights but not the training corpus. Internet off is
     # required for the run to count as a code-competition entry.
     "submit": ("03_submit.ipynb", True, False, [], []),
+    # Internet on: the labeller downloads its weights. That is fine because the
+    # labeller runs at training time only and never touches the submission.
+    "label": ("04_label.ipynb", True, True, [], []),
 }
 
 # Folds to train, and therefore which train kernels the submission blends. Each

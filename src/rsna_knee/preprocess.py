@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .config import GRID, SIZE, SLICES
+from .config import GRID, MOSAIC_QUALITY, SIZE, SLICES
 
 
 def pick_slice_indices(n: int, k: int = SLICES) -> list[int]:
@@ -47,8 +47,16 @@ def volume_to_mosaic(vol: np.ndarray, size: int = SIZE, grid: int = GRID) -> np.
     return np.vstack(rows)
 
 
-def mosaic_to_volume(mos: np.ndarray, size: int = SIZE, grid: int = GRID) -> np.ndarray:
-    """Inverse of volume_to_mosaic: (grid*size, grid*size) -> (grid*grid, size, size)."""
+def mosaic_to_volume(mos: np.ndarray, size: int | None = None, grid: int = GRID
+                     ) -> np.ndarray:
+    """Inverse of volume_to_mosaic: (grid*size, grid*size) -> (grid*grid, size, size).
+
+    The tile size is read from the mosaic rather than assumed from config, so a
+    corpus built at one resolution still decodes correctly after SIZE changes --
+    otherwise a 384 corpus read with SIZE=256 would silently return cropped tiles.
+    """
+    if size is None:
+        size = mos.shape[0] // grid
     out = np.empty((grid * grid, size, size), dtype=mos.dtype)
     for r in range(grid):
         for c in range(grid):
@@ -57,10 +65,22 @@ def mosaic_to_volume(mos: np.ndarray, size: int = SIZE, grid: int = GRID) -> np.
 
 
 def save_mosaic(mos: np.ndarray, path: Path) -> None:
+    """Write a mosaic, choosing the encoder from the file extension."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    # optimize=False keeps preprocessing throughput up; the size difference is small.
-    Image.fromarray(mos).save(path, format="PNG", compress_level=6)
+    img = Image.fromarray(mos)
+    if path.suffix.lower() in (".jpg", ".jpeg"):
+        # Quality 95 on already-8-bit windowed MRI is visually lossless and about
+        # a quarter the size of PNG, which is what pays for the higher resolution.
+        img.save(path, format="JPEG", quality=MOSAIC_QUALITY, subsampling=0,
+                 optimize=True)
+    else:
+        img.save(path, format="PNG", compress_level=6)
 
 
 def load_mosaic(path: Path) -> np.ndarray:
     return np.asarray(Image.open(path).convert("L"), dtype=np.uint8)
+
+
+def mosaic_geometry(mos: np.ndarray, grid: int = GRID) -> int:
+    """Tile size implied by a mosaic, so a corpus can be read at its own scale."""
+    return mos.shape[0] // grid

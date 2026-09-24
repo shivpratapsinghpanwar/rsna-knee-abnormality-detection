@@ -33,28 +33,36 @@ from rsna_knee.preprocess import mosaic_to_volume, volume_to_mosaic  # noqa: E40
 from rsna_knee.series import select_series  # noqa: E402
 
 
-def study_tensor_from_prep(study: str, slots: dict[int, str]
+def study_slices_from_prep(study: str, slots: dict[int, str], size: int
                            ) -> tuple[np.ndarray, np.ndarray]:
-    """Build a study tensor from already-preprocessed mosaics.
+    """Build a uint8 study volume from already-preprocessed mosaics.
 
     Used to score studies whose mosaics exist (the local dev corpus, or the
     training set for out-of-fold predictions) without re-reading DICOM.
     """
-    from rsna_knee.preprocess import load_mosaic
+    from rsna_knee.preprocess import load_mosaic, resize
 
-    vol = np.zeros((MAX_SERIES, SLICES, SIZE, SIZE), dtype=np.float32)
+    out = np.zeros((MAX_SERIES, SLICES, size, size), dtype=np.uint8)
     mask = np.zeros(MAX_SERIES, dtype=bool)
     for slot, path in slots.items():
         if slot >= MAX_SERIES:
             continue
-        vol[slot] = mosaic_to_volume(load_mosaic(path)).astype(np.float32) / 255.0
+        v = mosaic_to_volume(load_mosaic(path))
+        if v.shape[-1] != size:
+            v = np.stack([resize(sl, size) for sl in v])
+        out[slot] = v
         mask[slot] = True
-    return (vol - IMAGENET_MEAN) / IMAGENET_STD, mask
+    return out, mask
 
 
-def study_tensor(split: str, study: str, sel: pd.DataFrame) -> tuple[np.ndarray, np.ndarray]:
-    """Build one study's (M, S, H, W) volume and its series mask from raw DICOM."""
-    vol = np.zeros((MAX_SERIES, SLICES, SIZE, SIZE), dtype=np.float32)
+def study_slices(split: str, study: str, sel: pd.DataFrame,
+                 size: int) -> tuple[np.ndarray, np.ndarray]:
+    """Decode one study's DICOM to (M, SLICES, size, size) uint8 plus a mask.
+
+    DICOM is read once at the largest resolution any model needs; smaller models
+    get a resize of the same pixels rather than a second pass over the files.
+    """
+    out = np.zeros((MAX_SERIES, SLICES, size, size), dtype=np.uint8)
     mask = np.zeros(MAX_SERIES, dtype=bool)
     for r in sel[sel.StudyInstanceUID == study].itertuples():
         d = RAW / f"{split}_series" / study / r.SeriesInstanceUID
@@ -67,22 +75,40 @@ def study_tensor(split: str, study: str, sel: pd.DataFrame) -> tuple[np.ndarray,
                 continue
             # Round-tripping through the mosaic guarantees the tensor is identical
             # to what training saw, rather than merely similar.
-            vol[r.slot] = mosaic_to_volume(volume_to_mosaic(v)).astype(np.float32) / 255.0
+            out[r.slot] = mosaic_to_volume(volume_to_mosaic(v, size=size), size=size)
             mask[r.slot] = True
         except Exception:
             continue
-    return (vol - IMAGENET_MEAN) / IMAGENET_STD, mask
+    return out, mask
 
 
-def load_models(paths: list[Path], device) -> list[KneeStudyModel]:
+def to_model_input(vol_u8: np.ndarray, size: int) -> np.ndarray:
+    """Rescale a uint8 study volume to one model's size and normalise it."""
+    from rsna_knee.preprocess import resize
+
+    if vol_u8.shape[-1] != size:
+        vol_u8 = np.stack([
+            np.stack([resize(sl, size) for sl in series]) for series in vol_u8
+        ])
+    return (vol_u8.astype(np.float32) / 255.0 - IMAGENET_MEAN) / IMAGENET_STD
+
+
+def load_models(paths: list[Path], device) -> list[tuple[KneeStudyModel, int]]:
+    """Load checkpoints with the input size each was trained at.
+
+    Checkpoints record their own `size`, so models trained on a 256 corpus and a
+    384 corpus can be blended in one submission -- which is worth doing, since
+    resolution diversity is one of the cheaper sources of ensemble gain.
+    """
     models = []
     for p in paths:
         ck = torch.load(p, map_location="cpu", weights_only=False)
         m = KneeStudyModel(ck.get("backbone", "resnet34"), pretrained=False)
         m.load_state_dict(ck["model"])
         m.to(device).eval()
-        models.append(m)
-        print(f"  loaded {p.name} (fold {ck.get('fold')}, "
+        size = int(ck.get("size", 256))  # corpora before `size` existed were 256
+        models.append((m, size))
+        print(f"  loaded {p.name} (fold {ck.get('fold')}, size {size}, "
               f"weak AUC {ck.get('weak_auc')})")
     return models
 
@@ -122,25 +148,34 @@ def main() -> None:
         by_study = {}
         print(f"{len(ids)} studies, {len(sel)} series selected")
 
+    # Decode each study once at the largest size any model wants, then feed every
+    # model a resize of those same pixels.
+    read_size = max(size for _, size in models)
     per_model = [[] for _ in models]
     batch: list[tuple[np.ndarray, np.ndarray]] = []
 
     def flush() -> None:
         if not batch:
             return
-        vol = torch.from_numpy(np.stack([b[0] for b in batch])).to(device)
+        raw = np.stack([b[0] for b in batch])
         msk = torch.from_numpy(np.stack([b[1] for b in batch])).to(device)
         slots = torch.arange(MAX_SERIES, device=device).expand(len(batch), MAX_SERIES)
         with torch.no_grad(), torch.autocast(device.type, torch.float16, enabled=amp):
-            for k, m in enumerate(models):
-                per_model[k].append(torch.sigmoid(m(vol, msk, slots).float()).cpu().numpy())
+            cache: dict[int, torch.Tensor] = {}
+            for k, (m, size) in enumerate(models):
+                if size not in cache:
+                    cache[size] = torch.from_numpy(
+                        np.stack([to_model_input(v, size) for v in raw])
+                    ).to(device)
+                out = m(cache[size], msk, slots)
+                per_model[k].append(torch.sigmoid(out.float()).cpu().numpy())
         batch.clear()
 
     for i, study in enumerate(ids, 1):
         if args.from_prep:
-            batch.append(study_tensor_from_prep(study, by_study[study]))
+            batch.append(study_slices_from_prep(study, by_study[study], read_size))
         else:
-            batch.append(study_tensor(args.split, study, sel))
+            batch.append(study_slices(args.split, study, sel, read_size))
         if len(batch) == args.batch:
             flush()
         if i % 25 == 0:

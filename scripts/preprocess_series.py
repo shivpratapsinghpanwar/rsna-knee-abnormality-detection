@@ -23,7 +23,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from rsna_knee.config import CSV, PREP, RAW  # noqa: E402
+from rsna_knee.config import CSV, MOSAIC_EXT, PREP, RAW, SIZE  # noqa: E402
 from rsna_knee.dicom_io import read_series  # noqa: E402
 from rsna_knee.preprocess import save_mosaic, volume_to_mosaic  # noqa: E402
 from rsna_knee.series import select_series  # noqa: E402
@@ -91,10 +91,12 @@ def main() -> None:
     out_root = PREP / args.split
     jobs = [
         (args.split, r.StudyInstanceUID, r.SeriesInstanceUID,
-         str(out_root / r.StudyInstanceUID / f"{r.slot}_{r.SeriesInstanceUID}.png"))
+         str(out_root / r.StudyInstanceUID
+             / f"{r.slot}_{r.SeriesInstanceUID}{MOSAIC_EXT}"))
         for r in sel.itertuples()
     ]
-    print(f"selected {len(jobs)} series -> {out_root}")
+    print(f"selected {len(jobs)} series -> {out_root} "
+          f"({SIZE}x{SIZE} tiles, {MOSAIC_EXT})")
 
     stats: dict[str, int] = {}
     t0 = time.time()
@@ -122,7 +124,7 @@ def main() -> None:
                 break
 
     print("\ndone:", stats, "(stopped early)" if stopped_early else "")
-    size = sum(p.stat().st_size for p in out_root.rglob("*.png"))
+    size = sum(p.stat().st_size for p in out_root.rglob(f"*{MOSAIC_EXT}"))
     print(f"corpus: {size / 1e9:.2f} GB in {out_root}")
 
 

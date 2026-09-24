@@ -27,10 +27,14 @@ def index_corpus(split: str = "train") -> pd.DataFrame:
         for study_dir in root.iterdir():
             if not study_dir.is_dir():
                 continue
-            for png in study_dir.glob("*.png"):
-                slot = int(png.name.split("_", 1)[0])
+            # Both extensions: the first corpus was PNG at 256, later ones are
+            # JPEG at higher resolution, and a mixed corpus must still index.
+            for mos in sorted(study_dir.iterdir()):
+                if mos.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+                    continue
+                slot = int(mos.name.split("_", 1)[0])
                 rows.append(
-                    dict(StudyInstanceUID=study_dir.name, slot=slot, path=str(png))
+                    dict(StudyInstanceUID=study_dir.name, slot=slot, path=str(mos))
                 )
     return pd.DataFrame(rows, columns=["StudyInstanceUID", "slot", "path"])
 
@@ -91,9 +95,18 @@ class KneeStudyDataset(Dataset):
         return len(self.labels)
 
     def _load_slot(self, path: str) -> np.ndarray:
-        from .preprocess import load_mosaic
+        """Decode one mosaic to (SLICES, size, size), rescaling if it differs.
 
-        return mosaic_to_volume(load_mosaic(path)).astype(np.float32) / 255.0
+        The stored corpus and the model's input size are allowed to disagree: a
+        256 corpus can train a 384 model or vice versa, which is what makes
+        resolution an experiment rather than a rebuild.
+        """
+        from .preprocess import load_mosaic, resize
+
+        vol = mosaic_to_volume(load_mosaic(path))
+        if vol.shape[-1] != self.size:
+            vol = np.stack([resize(s, self.size) for s in vol])
+        return vol.astype(np.float32) / 255.0
 
     def _augment(self, vol: np.ndarray) -> np.ndarray:
         rng = np.random
