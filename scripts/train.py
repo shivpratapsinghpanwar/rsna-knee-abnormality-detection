@@ -86,6 +86,8 @@ def main() -> None:
     # best checkpoint so far is already written and the run is still useful.
     ap.add_argument("--max-minutes", type=float, default=0,
                     help="stop after the epoch that crosses this (0 = no limit)")
+    ap.add_argument("--grad-checkpointing", action="store_true",
+                    help="recompute activations; ~30%% slower, ~half the memory")
     ap.add_argument("--pos-weight-cap", type=float, default=0,
                     help="inverse-prevalence positive weighting, capped here "
                          "(0 disables). Aimed at the rare targets under macro AUC")
@@ -125,7 +127,8 @@ def main() -> None:
     va_ld = DataLoader(va_ds, batch_size=args.batch, shuffle=False,
                        num_workers=args.workers, collate_fn=collate, pin_memory=amp)
 
-    model = KneeStudyModel(args.backbone, pretrained=True).to(device)
+    model = KneeStudyModel(args.backbone, pretrained=True,
+                           grad_checkpointing=args.grad_checkpointing).to(device)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-2)
     steps = max(1, len(tr_ld) // args.accum) * args.epochs
     sched = torch.optim.lr_scheduler.OneCycleLR(

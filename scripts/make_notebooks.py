@@ -205,6 +205,39 @@ print(df.drop(columns=["StudyInstanceUID"]).mean().round(3).to_string())''',
 ]
 
 
+# Kaggle's kernel-output API downloads files one at a time. The 384 corpus is
+# 17,071 loose JPEGs, which came down at ~3 files/minute -- days, not hours. One
+# tar of the same bytes downloads at full speed, so packing it is the difference
+# between having the corpus locally and not.
+PACK = [
+    "# 06 - Pack the corpus into a single archive\n"
+    "#\n"
+    "# CPU only, so it costs no GPU quota. Attaches the preprocess kernel and\n"
+    "# writes one tar, because kernels_output fetches loose files serially and\n"
+    "# 17k of them is unusable over the API.\n"
+    "#\n"
+    "# Uncompressed on purpose: the mosaics are already JPEG, so tar.gz would\n"
+    "# spend CPU to save almost nothing.",
+    BOOT,
+    '''import tarfile, time
+from pathlib import Path
+
+src = cfg.PREP
+assert src.exists(), f"corpus not found at {src}"
+files = sorted(p for p in src.rglob("*") if p.suffix.lower() in (".jpg", ".png"))
+print(f"{len(files)} mosaics, {sum(p.stat().st_size for p in files)/1e9:.2f} GB")
+
+out = Path("/kaggle/working/prep.tar")
+t = time.time()
+with tarfile.open(out, "w") as tar:
+    for i, p in enumerate(files, 1):
+        tar.add(p, arcname=str(p.relative_to(src.parent)))
+        if i % 2000 == 0:
+            print(f"  {i}/{len(files)}", flush=True)
+print(f"wrote {out}  {out.stat().st_size/1e9:.2f} GB in {(time.time()-t)/60:.1f} min")''',
+]
+
+
 def notebook(cells: list[str]) -> dict:
     return {
         "cells": [
@@ -234,6 +267,7 @@ def main() -> None:
         ("03_submit.ipynb", SUBMIT),
         ("04_label.ipynb", LABEL),
         ("05_label_full.ipynb", LABEL_FULL),
+        ("06_pack.ipynb", PACK),
     ]:
         # The leading markdown cell doubles as the notebook's title block.
         cells = [cells[0].replace("# ", "", 1)] + cells[1:]

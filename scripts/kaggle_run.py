@@ -48,6 +48,9 @@ STAGES = {
     # labeller runs at training time only and never touches the submission.
     "label": ("04_label.ipynb", True, True, [], []),
     "labelfull": ("05_label_full.ipynb", True, True, [], []),
+    # CPU only: packing costs no GPU quota, which matters when the weekly 30 h
+    # is gone and training has to move to local hardware.
+    "pack": ("06_pack.ipynb", False, False, [], [PREP_KERNEL]),
 }
 
 # Folds to train, and therefore which train kernels the submission blends. Each

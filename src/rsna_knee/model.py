@@ -62,12 +62,21 @@ class SeriesEncoder(nn.Module):
     """
 
     def __init__(self, backbone: str = "resnet34", pretrained: bool = True,
-                 drop: float = 0.0):
+                 drop: float = 0.0, grad_checkpointing: bool = False):
         super().__init__()
         self.net = timm.create_model(
             backbone, pretrained=pretrained, num_classes=0, in_chans=3,
             drop_rate=drop,
         )
+        if grad_checkpointing:
+            # The MIL structure means one study is MAX_SERIES * SLICES = 64
+            # images, so activation memory, not parameter count, is what fills
+            # the card. Recomputing activations trades ~30% speed for roughly
+            # half the memory, which is what makes 384 fit a 10 GB card at all.
+            try:
+                self.net.set_grad_checkpointing(True)
+            except Exception:
+                pass
         self.dim = self.net.num_features
 
     def forward(self, vol: torch.Tensor) -> torch.Tensor:
@@ -84,9 +93,11 @@ class KneeStudyModel(nn.Module):
     """Full study-level model over a fixed grid of (series slots x slices)."""
 
     def __init__(self, backbone: str = "resnet34", pretrained: bool = True,
-                 n_targets: int = N_TARGETS, drop: float = 0.1):
+                 n_targets: int = N_TARGETS, drop: float = 0.1,
+                 grad_checkpointing: bool = False):
         super().__init__()
-        self.encoder = SeriesEncoder(backbone, pretrained, drop=drop)
+        self.encoder = SeriesEncoder(backbone, pretrained, drop=drop,
+                                     grad_checkpointing=grad_checkpointing)
         dim = self.encoder.dim
 
         self.slice_pool = TargetAttentionPool(dim, n_targets)
