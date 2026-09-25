@@ -47,6 +47,7 @@ STAGES = {
     # Internet on: the labeller downloads its weights. That is fine because the
     # labeller runs at training time only and never touches the submission.
     "label": ("04_label.ipynb", True, True, [], []),
+    "labelfull": ("05_label_full.ipynb", True, True, [], []),
 }
 
 # Folds to train, and therefore which train kernels the submission blends. Each

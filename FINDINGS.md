@@ -242,6 +242,67 @@ The preprocessing in this path is the same code that built the training corpus,
 so there is no train/serve skew -- the test tensor is round-tripped through the
 mosaic representation rather than merely resembling it.
 
+## The LLM labeller
+
+The reports exist only at training time, so the labeller has no inference cost
+and can be arbitrarily expensive. Qwen2.5-7B-Instruct scores the same 12 targets
+on the same 0-3 graded scale, through the same 58-gold harness:
+
+| labeller | macro AUC on gold |
+|---|---|
+| rule-based regex (175 regex lines, 12 languages) | 0.738 |
+| Qwen2.5-7B-Instruct | 0.811 |
+| **blend of the two** | **0.844** |
+
++0.106 over regex, roughly three times the n=58 noise floor, so unlike most
+differences on this set it is real.
+
+### Why the blend beats either alone
+
+The blend weight sweep is almost flat: 0.842 at w=0.1 through 0.852 at w=0.9,
+against 0.738 for regex alone and 0.811 for the LLM alone. A curve that flat
+means the gain is not "the right mixture of two opinions".
+
+The LLM emits only four values (0, 0.35, 0.85, 1.0), so its scores are full of
+ties. ROC AUC cannot rank tied studies, and adding even 10% of the regex score
+**breaks those ties** -- which is why 10% regex is worth as much as 50%. The
+blend is a tie-breaker on a coarse score, not an ensemble.
+
+That also says where the next gain is: ask the model for a finer scale, or
+extract a continuous confidence, rather than tuning the mixture.
+
+w = 0.5 is what we use. The whole 0.1-0.9 range sits inside the noise floor, so
+picking the nominal argmax at 0.9 would be fitting noise.
+
+### Per-target, at the blend
+
+| target | regex | LLM | blend |
+|---|---|---|---|
+| ACL | 0.886 | 0.873 | **0.963** |
+| MCL | 0.813 | 0.862 | **0.959** |
+| Medial Meniscus | 0.701 | 0.892 | 0.897 |
+| Lateral Meniscus | 0.769 | 0.725 | 0.806 |
+| Medial OA | 0.710 | 0.880 | 0.908 |
+| Lateral OA | 0.607 | 0.801 | 0.824 |
+| PF OA | 0.705 | 0.777 | 0.813 |
+| Effusion | 0.780 | 0.748 | 0.781 |
+| Synovitis | 0.650 | 0.638 | 0.665 |
+| Baker's | 0.768 | 0.901 | 0.894 |
+| Contusion | 0.742 | 0.833 | 0.880 |
+| Fracture | 0.728 | 0.807 | 0.832 |
+
+The LLM wins 8 of 12 outright, and is much stronger exactly where regex was
+weakest -- Medial Meniscus 0.701 -> 0.892, Lateral OA 0.607 -> 0.801. Those are
+the judgements that need reading a sentence rather than matching a pattern:
+whether signal reaches the articular surface, which compartment a finding
+belongs to.
+
+Regex still wins on ACL, Lateral Meniscus, Effusion and Synovitis, which is why
+replacing it outright would have been worse than blending.
+
+**MCL 0.813 -> 0.959 matters most.** MCL is the image model's worst target at
+0.611 and the rarest at 4.7%, and part of that was being trained on poor labels.
+
 ### Where the remaining headroom is
 
 The labeler is no longer the bottleneck it was. At 0.738 macro AUC it is a usable

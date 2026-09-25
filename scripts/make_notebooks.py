@@ -166,9 +166,38 @@ QUANT = "--load-4bit"''',
     --batch {BATCH} --out /kaggle/working/llm_labels_gold.csv''',
     '''# Score the LLM labels against gold, side by side with the rule-based ones.
 !cd {CODE} && python scripts/eval_labeler.py --llm /kaggle/working/llm_labels_gold.csv''',
-    '''# Full corpus. Only worth the GPU time if the gold score above beat 0.738.
-!cd {CODE} && python scripts/llm_label.py --model {MODEL} {QUANT} --batch {BATCH} \\
+]
+
+# The full-corpus pass gets its own kernel. Running it after the gold pass in one
+# session left the first process's allocator still holding the card, and the
+# 4407-report run died at model load with 86 MB free.
+LABEL_FULL = [
+    "# 05 - LLM labels for the whole corpus\n"
+    "#\n"
+    "# Only worth the GPU time once notebook 04 shows the model beating the\n"
+    "# rule-based labeller on the 58 gold studies. It did: 0.811 against 0.738,\n"
+    "# and 0.844 blended.\n"
+    "#\n"
+    "# Writes incrementally, so the output is usable even if the session is cut\n"
+    "# short -- build_weak_labels falls back to the regex score for any study the\n"
+    "# LLM has no row for.",
+    BOOT,
+    '''import subprocess, sys
+try:
+    import bitsandbytes  # noqa: F401
+except ImportError:
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "bitsandbytes"],
+                   check=False)
+
+MODEL = "Qwen/Qwen2.5-7B-Instruct"
+BATCH = 4
+QUANT = "--load-4bit"''',
+    '''!cd {CODE} && python scripts/llm_label.py --model {MODEL} {QUANT} --batch {BATCH} \\
     --out /kaggle/working/llm_labels.csv''',
+    '''import pandas as pd
+df = pd.read_csv("/kaggle/working/llm_labels.csv")
+print(df.shape)
+print(df.drop(columns=["StudyInstanceUID"]).mean().round(3).to_string())''',
 ]
 
 
@@ -200,6 +229,7 @@ def main() -> None:
         ("02_train.ipynb", TRAIN),
         ("03_submit.ipynb", SUBMIT),
         ("04_label.ipynb", LABEL),
+        ("05_label_full.ipynb", LABEL_FULL),
     ]:
         # The leading markdown cell doubles as the notebook's title block.
         cells = [cells[0].replace("# ", "", 1)] + cells[1:]

@@ -20,6 +20,7 @@ Writes `llm_labels.csv` to WORK incrementally, so an interrupted run resumes.
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 from pathlib import Path
@@ -147,6 +148,10 @@ def main() -> None:
         print(parse("Sure! Here you go:\nACL: 3\nMM=2\nnothing else found"))
         return
 
+    # Fragmentation is the difference between fitting and not on a 14.5 GB card
+    # when sequence lengths vary this much.
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -160,7 +165,12 @@ def main() -> None:
     # -- that is exactly how the first run died. 4-bit brings it to ~5 GB and
     # leaves room for a real batch, and fp16 is the right dtype on Turing.
     compute_dtype = torch.float16
-    kw: dict = dict(dtype=compute_dtype, device_map="auto")
+    # Pin to one GPU rather than letting accelerate shard. In 4-bit the model is
+    # ~5 GB and fits a single T4 with room for a batch; sharding across two
+    # splits the weights but leaves each device holding activations for the whole
+    # sequence, and the full-corpus run died that way with 86 MB free on GPU 1.
+    device_map = {"": 0} if args.load_4bit and torch.cuda.is_available() else "auto"
+    kw: dict = dict(dtype=compute_dtype, device_map=device_map)
     if args.load_4bit:
         from transformers import BitsAndBytesConfig
 
