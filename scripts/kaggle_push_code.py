@@ -23,7 +23,9 @@ os.environ.setdefault("KAGGLE_CONFIG_DIR", os.path.expanduser("~/.kaggle"))
 
 REPO = Path(__file__).resolve().parents[1]
 SLUG = "rsna-knee-code"
-INCLUDE = ["src", "scripts", "tests"]
+# labels/ carries the LLM label CSV (~0.5 MB) so the training notebook can
+# build blended weak labels without re-running the labeller.
+INCLUDE = ["src", "scripts", "tests", "labels"]
 
 
 def build(stage: Path, username: str) -> None:

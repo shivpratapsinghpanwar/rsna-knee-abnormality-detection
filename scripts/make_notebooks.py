@@ -85,7 +85,11 @@ TRAIN = [
     "# used for checkpoint selection) and gold AUC over the ~12 human-labelled\n"
     "# studies in the fold (honest but very noisy - the noise floor is ~0.03).",
     BOOT,
-    '''!cd {CODE} && python scripts/build_weak_labels.py''',
+    '''# Blended weak labels: 0.5 regex + 0.5 Qwen2.5-7B. The blend scores 0.846
+# against the 58 gold studies where regex alone scores 0.738, and it is what the
+# model actually learns from, so it is the single biggest lever in the pipeline.
+!cd {CODE} && python scripts/build_weak_labels.py \
+    --llm {CODE}/labels/llm_labels.csv --blend 0.5''',
     '''FOLD = 0
 BACKBONE = "resnet34"
 BATCH = 2
