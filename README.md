@@ -16,31 +16,47 @@ PF OA, Effusion, Synovitis, Baker's, Contusion, Fracture
 **1. Labels come from reports, not from humans.** Only 58 of 4407 training
 studies (1.3%) carry gold labels, but all 4407 carry a free-text radiology report
 in roughly 12 languages. The image model therefore trains on report-derived weak
-labels; the 58 gold studies are only good enough to validate the labeler, not to
-train on. See [FINDINGS.md](FINDINGS.md).
+labels; the 58 gold studies are only good enough to validate the labeller, not
+to train on.
+
+Labelling therefore has no inference-time cost — the reports do not exist at
+test time — which means it can be arbitrarily expensive. Blending a 7B LLM with
+the regex lexicon takes the labels from 0.738 to **0.846** against gold. See
+[FINDINGS.md](FINDINGS.md).
 
 **2. The images do not fit on a workstation.** The DICOM corpus is ~300-600 GB
-(~800k files) and Kaggle serves it at a couple of MB/s. So **training runs on
-Kaggle**, where the data is already mounted, and only a small streamed subset
-lives locally for developing the code. Nothing in the pipeline assumes a full
-local copy.
+(~800k files) and Kaggle serves it at a couple of MB/s, so the corpus is built
+**on Kaggle** where the data is already mounted. Nothing in the pipeline assumes
+a full local copy of the DICOM.
+
+The *mosaic* corpus is another matter: at 8.9 GB it fits anywhere, so training
+runs wherever there is a GPU — Kaggle when quota allows, otherwise locally.
 
 ## Pipeline
 
 | stage | code | runs where |
 |---|---|---|
-| report -> graded weak labels | `src/rsna_knee/reports.py`, `scripts/build_weak_labels.py` | anywhere (CPU) |
+| report -> graded weak labels | `src/rsna_knee/reports.py` (regex) + `scripts/llm_label.py` (LLM), blended by `scripts/build_weak_labels.py` | Kaggle GPU once, then anywhere |
 | series triage | `src/rsna_knee/series.py` | anywhere |
-| DICOM -> PNG mosaic corpus | `src/rsna_knee/{dicom_io,preprocess}.py`, `scripts/preprocess_series.py` | Kaggle (full) / local (subset) |
-| training | `src/rsna_knee/{data,model}.py`, `scripts/train.py` | Kaggle |
+| DICOM -> JPEG mosaic corpus | `src/rsna_knee/{dicom_io,preprocess}.py`, `scripts/preprocess_series.py` | Kaggle CPU kernel |
+| training | `src/rsna_knee/{data,model}.py`, `scripts/train.py` | Kaggle GPU or local 3080 |
 | submission | `scripts/infer.py` | Kaggle, offline |
 
 ### Storage format
-Each selected series becomes **one lossless PNG**: 16 evenly-spaced slices at
-256x256, tiled 4x4 into a 1024x1024 mosaic (~0.5 MB). That is ~8-9 GB for the
-whole training set — inside Kaggle's 20 GB output cap and small enough to keep
-locally — with no custom container to maintain. `preprocess.py` round-trips
-mosaic <-> volume exactly, which `tests/test_pipeline.py` pins.
+Each selected series becomes **one JPEG**: 16 evenly-spaced slices at 384x384,
+tiled 4x4 into a 1536x1536 mosaic (~0.5 MB). That is ~8.9 GB for the whole
+training set — inside Kaggle's 20 GB output cap — with no custom container to
+maintain. `preprocess.py` round-trips mosaic <-> volume exactly, which
+`tests/test_pipeline.py` pins.
+
+**Format is what buys the resolution.** The first corpus was lossless PNG at
+256, and 256 discards roughly 75% of the native pixels — worst for the subtle
+findings we score lowest on. The 20 GB cap looked like the blocker but was not:
+measured on real mosaics, JPEG q95 is **480 KB/series against PNG's 906 KB at
+384**, so 2.25x the pixels fits in *less* space than the old corpus, at 0.18%
+mean error. Set `RSNA_KNEE_SIZE` / `RSNA_KNEE_EXT` to build a corpus at another
+scale; checkpoints record the size they trained at, so models from different
+corpora can be blended.
 
 ### Series selection
 Studies carry 3-14 series (mean 5.5), mostly redundant repeats of a plane. We
@@ -149,19 +165,40 @@ across threads, so a single 429 pauses every worker rather than having each retr
 into the same wall. If the ban is longer than 15 minutes it stops cleanly; the
 run is resumable, so re-running once the window clears picks up where it left off.
 
+## Compute budget
+
+Kaggle's GPU quota is **30 h per week, account-wide** — not per competition, so
+other projects spend it too. When it runs out `kaggle_run.py` fails at push, and
+the kernel keeps reporting its *previous* version's COMPLETE status, which looks
+exactly like a successful run. Check the push output, not the status.
+
+Two consequences shape the layout here:
+
+- Anything that does not need a GPU runs as a **CPU kernel** (preprocessing,
+  packing), which draws on a separate and much larger budget.
+- Moving a corpus off Kaggle goes through `kaggle_run.py pack`, which tars it
+  inside a CPU kernel first. The kernel-output API fetches loose files serially
+  — the 17,071-file corpus came down at ~3 files/minute, versus ~2 MB/s for the
+  single archive.
+
+Training also runs locally: an RTX 3080 is faster than a Kaggle T4, and at 10 GB
+it needs `--batch 1 --grad-checkpointing` at 384 rather than the T4's batch 2.
+
 ## Status
 
-- **Labeler** — done and validated: macro AUC **0.738** on the 58 gold studies,
-  up from 0.663 at v1. 24 regression tests.
-- **Corpus** — built on Kaggle: **17,071 mosaics over all 4,407 studies, 8.86 GB**.
-- **Image model** — trained on the full corpus. Folds 0-2 reach weak AUC
-  **0.780 mean** over ~880 held-out studies, and **0.776 mean gold AUC**.
-  The model beats its own teacher: the labeler scores 0.738 on gold, so the
-  network learned anatomy rather than copying the report parser. See
-  [FINDINGS.md](FINDINGS.md) for the per-target breakdown.
-- **Weakest target is MCL at 0.611** — the rarest at 4.7% positive. That, and
-  the meniscus targets at ~0.75, are where the next gain is.
-- **Local dev corpus** — 18 mosaics across 5 studies, enough to exercise the code
-  but not to train. Further fetching is blocked by the download quota above.
-- **Submission** — `kaggle_run.py submit` runs offline and writes a valid
-  `submission.csv`; not yet entered on the leaderboard.
+- **Labeller** — blended regex + Qwen2.5-7B, **0.846** macro AUC on the 58 gold
+  studies, up from 0.663 (v1 regex) and 0.738 (final regex). Only 7.9% of
+  studies now carry no signal at all, down from 19.4%. 24 regression tests.
+- **Corpus** — 17,071 mosaics over all 4,407 studies. Rebuilt at **384 JPEG**
+  (8.9 GB) after the first pass at 256 PNG.
+- **Image model** — three folds at 256 on regex-only labels: weak **0.780**,
+  gold **0.776**. One fold at 384 on the same labels: weak **0.787** (+0.008),
+  gold 0.726.
+- **Not yet trained on the blended labels.** That is the biggest pending gain
+  and it is blocked only on GPU time, not on code.
+- **Weakest target is MCL** — 0.611 in the image model, and the rarest at 4.7%
+  positive. Its *labels* improved most from the LLM (0.813 → 0.959), so this is
+  the first thing to re-check after a retrain.
+- **Submission** — verified end to end offline, valid format; not yet entered on
+  the leaderboard.
+
