@@ -41,7 +41,16 @@ KEY_TO_TARGET = dict(zip(KEYS, TARGETS))
 # The grade scale mirrors the rule-based labeler's: a graded score ranks better
 # under ROC AUC than a binary one, and "degeneration only" must not train the
 # same value as "radial tear".
-GRADE = {0: 0.0, 1: 0.35, 2: 0.85, 3: 1.0}
+#
+# Four levels turned out to be the scale's weakness rather than its strength.
+# On the gold set the LLM alone scores 0.811, but *any* blend with the regex
+# scores lands at 0.842-0.852 -- flat across the whole weight range. That
+# flatness is the tell: four values leave the corpus riddled with ties, ROC AUC
+# cannot rank tied studies, and the regex score was acting as a tie-breaker
+# rather than as a second opinion. A finer scale attacks that directly and costs
+# nothing extra to generate.
+GRADE4 = {0: 0.0, 1: 0.35, 2: 0.85, 3: 1.0}
+GRADE = GRADE4
 
 SYSTEM = """You are a musculoskeletal radiologist reading knee MRI reports.
 Reports may be in any language (English, Spanish, German, Turkish, Dutch, French,
@@ -82,27 +91,77 @@ Answer with exactly 12 items, nothing else:
 ACL=? MCL=? MM=? LM=? MOA=? LOA=? PFOA=? EFF=? SYN=? BAK=? CON=? FRA=?"""
 
 
-def build_prompt(report: str) -> list[dict]:
+# A 0-10 rung asks the model for the same judgement on a scale fine enough to
+# rank on. The wording keeps the clinically decisive boundaries -- tear versus
+# degeneration, trace versus large effusion -- pinned to specific numbers, so the
+# extra resolution lands inside the categories rather than blurring them.
+INSTRUCTION_FINE = """Report:
+\"\"\"
+{report}
+\"\"\"
+
+Rate how strongly the report supports each finding, 0-10:
+0  not mentioned, or explicitly absent / normal / intact
+1-2 mentioned only to be doubted, or a trace amount
+3-4 degeneration WITHOUT a tear, mild or equivocal change
+5-6 probable, or a small but definite finding
+7-8 clearly present as stated
+9-10 severe, large, complete or extensive
+
+Use the whole range. Two findings that are both present but differ in size or
+certainty must not get the same number.
+
+Findings:
+ACL  anterior cruciate ligament tear
+MCL  medial collateral ligament tear
+MM   medial meniscus TEAR (mucoid/intrasubstance degeneration alone is 3-4;
+     signal reaching the articular surface, or grade 3, is a tear)
+LM   lateral meniscus TEAR, same rule
+MOA  medial compartment osteoarthritis / cartilage loss
+LOA  lateral compartment osteoarthritis / cartilage loss
+PFOA patellofemoral osteoarthritis / chondral damage of patella or trochlea
+EFF  joint effusion, graded by amount
+SYN  synovitis or synovial thickening
+BAK  Baker's / popliteal cyst
+CON  bone contusion or bone marrow oedema
+FRA  fracture
+
+Answer with exactly 12 items, nothing else:
+ACL=? MCL=? MM=? LM=? MOA=? LOA=? PFOA=? EFF=? SYN=? BAK=? CON=? FRA=?"""
+
+
+def build_prompt(report: str, scale: int = 4) -> list[dict]:
     # Very long reports are truncated rather than dropped; the findings section is
     # near the end, so keep the tail.
     text = report if len(report) <= 6000 else report[-6000:]
+    template = INSTRUCTION if scale == 4 else INSTRUCTION_FINE
     return [
         {"role": "system", "content": SYSTEM},
-        {"role": "user", "content": INSTRUCTION.format(report=text)},
+        {"role": "user", "content": template.format(report=text)},
     ]
 
 
-def parse(out: str) -> dict[str, float]:
+def grade_map(scale: int) -> dict[int, float]:
+    """Value for each rung of an N-point scale, normalised to [0, 1]."""
+    if scale == 4:
+        return GRADE4
+    return {i: i / (scale - 1) for i in range(scale)}
+
+
+def parse(out: str, scale: int = 4) -> dict[str, float]:
     """Pull KEY=digit pairs out of a generation, defaulting anything absent to 0.
 
     Lenient by design: a model that adds prose around the answer, or emits the
     keys out of order, should still be usable rather than discarded.
     """
+    grade = grade_map(scale)
     found = {k: 0 for k in KEYS}
-    for key, val in re.findall(r"\b(ACL|MCL|MM|LM|MOA|LOA|PFOA|EFF|SYN|BAK|CON|FRA)\s*[=:]\s*([0-3])",
-                               out.upper()):
-        found[key] = int(val)
-    return {KEY_TO_TARGET[k]: GRADE[v] for k, v in found.items()}
+    pat = r"\b(ACL|MCL|MM|LM|MOA|LOA|PFOA|EFF|SYN|BAK|CON|FRA)\s*[=:]\s*(\d{1,2})"
+    for key, val in re.findall(pat, out.upper()):
+        v = int(val)
+        if v in grade:  # ignore an out-of-range rung rather than crash on it
+            found[key] = v
+    return {KEY_TO_TARGET[k]: grade[v] for k, v in found.items()}
 
 
 def main() -> None:
@@ -114,6 +173,14 @@ def main() -> None:
                     help="only the 58 gold-labelled studies, for validation")
     ap.add_argument("--out", default="")
     ap.add_argument("--load-4bit", action="store_true")
+    ap.add_argument("--scale", type=int, default=4, choices=[4, 11],
+                    help="rungs in the output scale; 11 gives 0-10, which ranks "
+                         "far better under AUC than 4 coarse levels")
+    ap.add_argument("--samples", type=int, default=1,
+                    help="self-consistency: sample this many times and average. "
+                         "Averaging also breaks ties, independently of --scale")
+    ap.add_argument("--temperature", type=float, default=0.7,
+                    help="only used when --samples > 1")
     ap.add_argument("--dry-run", action="store_true",
                     help="exercise prompt building and parsing without a model")
     args = ap.parse_args()
@@ -139,13 +206,16 @@ def main() -> None:
     print(f"{len(todo)} remaining")
 
     if args.dry_run:
-        msgs = build_prompt(todo[REPORT_COL].iloc[0])
+        # Read from the full frame, not the remaining work: a dry run should
+        # still show a prompt when a previous pass already labelled everything.
+        msgs = build_prompt(tr[REPORT_COL].iloc[0], args.scale)
         print("\n--- prompt ---\n" + msgs[1]["content"][:900])
         fake = "ACL=2 MCL=0 MM=1 LM=0 MOA=0 LOA=0 PFOA=1 EFF=3 SYN=0 BAK=0 CON=0 FRA=0"
         print("\n--- parse of", fake, "---")
-        print(parse(fake))
+        print(parse(fake, args.scale))
         print("\n--- parse of messy output ---")
-        print(parse("Sure! Here you go:\nACL: 3\nMM=2\nnothing else found"))
+        print(parse("Sure! Here you go:\nACL: 3\nMM=2\nnothing else found",
+                    args.scale))
         return
 
     # Fragmentation is the difference between fitting and not on a 14.5 GB card
@@ -190,19 +260,32 @@ def main() -> None:
 
     t0 = time.time()
 
-    def run(frame) -> list[str]:
+    def run(frame) -> list[dict[str, float]]:
+        """Label one batch, averaging over --samples generations."""
         prompts = [
-            tok.apply_chat_template(build_prompt(r), tokenize=False,
+            tok.apply_chat_template(build_prompt(r, args.scale), tokenize=False,
                                     add_generation_prompt=True)
             for r in frame[REPORT_COL]
         ]
         enc = tok(prompts, return_tensors="pt", padding=True,
                   truncation=True, max_length=3072).to(model.device)
-        with torch.no_grad():
-            gen = model.generate(**enc, max_new_tokens=64, do_sample=False,
-                                 pad_token_id=tok.pad_token_id)
-        return tok.batch_decode(gen[:, enc["input_ids"].shape[1]:],
-                                skip_special_tokens=True)
+        totals = [{t: 0.0 for t in TARGETS} for _ in range(len(frame))]
+        for _ in range(args.samples):
+            with torch.no_grad():
+                gen = model.generate(
+                    **enc, max_new_tokens=64,
+                    do_sample=args.samples > 1,
+                    temperature=args.temperature if args.samples > 1 else None,
+                    pad_token_id=tok.pad_token_id,
+                )
+            outs = tok.batch_decode(gen[:, enc["input_ids"].shape[1]:],
+                                    skip_special_tokens=True)
+            for i, text in enumerate(outs):
+                for t, v in parse(text, args.scale).items():
+                    totals[i][t] += v
+        # Averaging several samples is a second, independent source of
+        # resolution: it turns a discrete rung into a continuous score.
+        return [{t: v / args.samples for t, v in row.items()} for row in totals]
 
     batch = args.batch
     start = 0
@@ -220,9 +303,9 @@ def main() -> None:
                 print(f"  OOM -- retrying with batch {batch}", flush=True)
                 continue
             print("  OOM at batch 1; skipping this report", flush=True)
-            outs = [""] * len(chunk)
-        for sid, text in zip(chunk[ID_COL], outs):
-            rows.append({ID_COL: sid, **parse(text)})
+            outs = [{t: 0.0 for t in TARGETS} for _ in range(len(chunk))]
+        for sid, scored in zip(chunk[ID_COL], outs):
+            rows.append({ID_COL: sid, **scored})
         start += len(chunk)
 
         n = len(rows) - len(done)
