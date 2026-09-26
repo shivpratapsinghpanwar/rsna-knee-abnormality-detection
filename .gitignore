@@ -2,6 +2,7 @@ data/
 artifacts/
 prep/
 work/
+dl/
 *.pt
 *.ckpt
 __pycache__/

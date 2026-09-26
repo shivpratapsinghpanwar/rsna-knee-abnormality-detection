@@ -109,6 +109,9 @@ def main() -> None:
     ap.add_argument("--batch", type=int, default=0, help="train: studies per step")
     ap.add_argument("--posw", type=float, default=-1,
                     help="train: inverse-prevalence positive weight cap")
+    ap.add_argument("--cpu", action="store_true",
+                    help="force a CPU kernel; the GPU quota is weekly and a "
+                         "submission is cheap enough to run without one")
     ap.add_argument("--suffix", default="",
                     help="append to the kernel slug, to run variants side by side")
     ap.add_argument("--status", action="store_true", help="only report status")
@@ -139,6 +142,8 @@ def main() -> None:
         return
 
     nb, gpu, net, datasets, kernels = STAGES[args.stage]
+    if args.cpu:
+        gpu = False
     # The submission blends every trained fold, each of which lives in its own
     # kernel output.
     if args.stage == "submit":
