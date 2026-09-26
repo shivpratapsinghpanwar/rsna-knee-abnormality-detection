@@ -222,6 +222,12 @@ def main() -> None:
     # when sequence lengths vary this much.
     os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
+    # Keep model weights inside this project's own directory. The default cache
+    # is under the user profile on C:, which is shared with unrelated projects,
+    # and a 7B download is 15 GB in fp16 -- enough to matter to whatever else
+    # lives there. WORK is on the data drive.
+    os.environ.setdefault("HF_HOME", str(WORK.parent / "hf"))
+
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
