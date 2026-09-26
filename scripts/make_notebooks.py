@@ -118,14 +118,16 @@ SUBMIT = [
     "# resolution they were trained at, so models from different corpora blend.",
     BOOT,
     '''from pathlib import Path
-# Each training fold ran as its own kernel, so its checkpoints mount under that
-# kernel's own input directory.
-CKPTS = sorted(
-    str(p) for pat in ("*/models/*.pt", "*/*/models/*.pt", "*/*/*/models/*.pt")
-    for p in Path("/kaggle/input").glob(pat)
-    if "rsna-knee-train" in str(p)
-)
-assert CKPTS, "no checkpoints found - is every train fold attached as a source?"
+# Checkpoints arrive from two places with different shapes: a training kernel's
+# output keeps its models/ directory, while a dataset upload has the directory
+# flattened away by Kaggle. So locate the *inputs* whose name says they hold
+# weights, then search inside them, rather than assuming a layout -- a glob that
+# required models/ silently found nothing and failed the submission.
+ROOTS = [p for pat in ("*", "*/*", "*/*/*")
+         for p in Path("/kaggle/input").glob(pat)
+         if p.is_dir() and "rsna-knee-train" in p.name]
+CKPTS = sorted({str(q) for r in ROOTS for q in r.rglob("*.pt")})
+assert CKPTS, f"no checkpoints found under {[str(r) for r in ROOTS]}"
 for c in CKPTS:
     print(c)
 # A shell magic interpolates a bare {name}; build the argument string here rather

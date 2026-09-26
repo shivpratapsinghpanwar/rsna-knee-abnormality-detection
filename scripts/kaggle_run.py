@@ -44,6 +44,10 @@ STAGES = {
     # DICOM, so it needs the weights but not the training corpus. Internet off is
     # required for the run to count as a code-competition entry.
     "submit": ("03_submit.ipynb", True, False, [], []),
+    # Same notebook, but reading locally-trained weights uploaded as a dataset
+    # instead of the Kaggle training kernels. Kept separate so a submission is
+    # unambiguously one configuration rather than a blend of two eras.
+    "submitlocal": ("03_submit.ipynb", False, False, ["rsna-knee-train-local"], []),
     # Internet on: the labeller downloads its weights. That is fine because the
     # labeller runs at training time only and never touches the submission.
     "label": ("04_label.ipynb", True, True, [], []),
