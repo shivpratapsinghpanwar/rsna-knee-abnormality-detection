@@ -153,6 +153,12 @@ def main() -> None:
     ap.add_argument("--workers", type=int, default=4,
                     help="parallel requests; keep low, free tiers rate-limit")
     ap.add_argument("--out", default="")
+    ap.add_argument("--list-models", action="store_true",
+                    help="ask the provider what it serves, rather than trusting "
+                         "a default model id that may have been renamed")
+    ap.add_argument("--smoke", action="store_true",
+                    help="one request end to end, to check the key and the "
+                         "response shape before committing to a full pass")
     args = ap.parse_args()
 
     load_env()
@@ -165,8 +171,40 @@ def main() -> None:
             "rather than passing it on the command line."
         )
     model = args.model or cfg["default_model"]
+
+    if args.list_models:
+        # Model ids get renamed and retired; ask rather than assume.
+        try:
+            if cfg["style"] == "openai":
+                base = cfg["url"].rsplit("/chat/completions", 1)[0]
+                r = requests.get(f"{base}/models",
+                                 headers={"Authorization": f"Bearer {key}"},
+                                 timeout=60)
+                r.raise_for_status()
+                names = sorted(m["id"] for m in r.json().get("data", []))
+            else:
+                r = requests.get(f"{cfg['url']}?key={key}", timeout=60)
+                r.raise_for_status()
+                names = sorted(m["name"].split("/")[-1]
+                               for m in r.json().get("models", []))
+            print(f"{args.provider} serves {len(names)} models:")
+            for n in names:
+                print("  ", n)
+        except Exception as exc:
+            print("could not list models:", type(exc).__name__, str(exc)[:200])
+        return
+
     print(f"provider {args.provider}  model {model}  scale {args.scale}  "
           f"samples {args.samples}")
+
+    if args.smoke:
+        sample = pd.read_csv(CSV / "train.csv")[REPORT_COL].iloc[0]
+        text = call(cfg, key, model, build_prompt(sample, args.scale), 0.0)
+        print("\n--- raw response ---")
+        print(text[:500] if text else "(empty -- key, model id or quota?)")
+        print("\n--- parsed ---")
+        print(json.dumps(parse(text, args.scale), indent=2) if text else "n/a")
+        return
 
     tr = pd.read_csv(CSV / "train.csv")
     if args.gold_only:
