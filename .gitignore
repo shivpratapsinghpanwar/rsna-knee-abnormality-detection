@@ -3,11 +3,14 @@ artifacts/
 prep/
 work/
 dl/
+hf/
 *.pt
 *.ckpt
 __pycache__/
 .venv/
 kaggle.json
+.env
+*.env
 .claude/
 .kaggle_stage/
 .kernel_stage/
