@@ -24,13 +24,15 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from rsna_knee.config import CSV, MAX_SERIES, RAW, SIZE, SLICES  # noqa: E402
+from rsna_knee.config import (
+    CSV, MAX_SERIES, RAW, SERIES_SLOTS, SIZE, SLICES,
+)  # noqa: E402
 from rsna_knee.data import IMAGENET_MEAN, IMAGENET_STD  # noqa: E402
 from rsna_knee.dicom_io import read_series  # noqa: E402
 from rsna_knee.labels import ID_COL, TARGETS  # noqa: E402
 from rsna_knee.model import KneeStudyModel  # noqa: E402
 from rsna_knee.preprocess import (  # noqa: E402
-    crop_mm, mosaic_to_volume, volume_to_mosaic,
+    crop_mm, mosaic_to_volume, normalise_laterality, volume_to_mosaic,
 )
 from rsna_knee.series import select_series  # noqa: E402
 
@@ -73,9 +75,14 @@ def study_slices(split: str, study: str, sel: pd.DataFrame,
         if not paths:
             continue
         try:
-            v, spacing = read_series(paths)
+            v, spacing, side = read_series(paths)
             if v.size == 0:
                 continue
+            # Same mirror as the corpus build; skipping it here would feed the
+            # model right knees it never saw in training.
+            plane = (SERIES_SLOTS[r.slot][0]
+                     if r.slot < len(SERIES_SLOTS) else "Sagittal")
+            v = normalise_laterality(v, plane, side)
             # Crop exactly as the checkpoints were trained; skipping or adding
             # it would be train/serve skew of the kind the mosaic round-trip
             # exists to prevent.

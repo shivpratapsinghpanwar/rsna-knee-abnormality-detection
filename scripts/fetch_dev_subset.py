@@ -199,7 +199,7 @@ def fetch_series(study: str, series: str, slot: int, names: list[str],
             ok = list(ex.map(lambda n: download(n, work / Path(n).name), names))
         if not any(ok):
             return "download-failed"
-        vol = read_series(sorted(work.glob("*.dcm")))
+        vol, _, _ = read_series(sorted(work.glob("*.dcm")))
         if vol.size == 0:
             return "empty"
         save_mosaic(volume_to_mosaic(vol), out)

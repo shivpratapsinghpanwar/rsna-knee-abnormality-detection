@@ -29,6 +29,31 @@ def pick_slice_indices(n: int, k: int = SLICES) -> list[int]:
     return [int(round(x)) for x in np.clip(np.linspace(lo, hi, k), 0, n - 1)]
 
 
+
+def normalise_laterality(vol: np.ndarray, plane: str, side: str) -> np.ndarray:
+    """Mirror a right knee onto the left-knee convention.
+
+    Four of the twelve targets are medial/lateral pairs, and medial is not a
+    fixed side of the image -- it is whichever side faces the other leg. On a
+    coronal or axial slice the medial compartment of a left knee sits at image
+    right and of a right knee at image left, so without this the same pixel
+    column means opposite anatomy in different studies and the model is asked to
+    separate medial from lateral with the evidence mirrored at random.
+
+    The axis to flip depends on the plane. Coronal and axial carry medial-lateral
+    *in plane*, so the width axis is reversed. Sagittal carries no medial-lateral
+    within a slice at all -- it runs through the stack -- so the slice order is
+    reversed instead.
+
+    Left knees and studies whose side could not be determined are returned
+    untouched; guessing is worse than leaving the minority unmirrored.
+    """
+    if side != "R" or vol.size == 0:
+        return vol
+    if plane.lower().startswith("sag"):
+        return vol[::-1].copy()
+    return vol[..., ::-1].copy()
+
 def crop_mm(vol: np.ndarray, spacing: float, crop: float = CROP_MM) -> np.ndarray:
     """Centre-crop a volume to a fixed physical width, in millimetres.
 

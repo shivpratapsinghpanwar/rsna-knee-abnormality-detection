@@ -67,6 +67,49 @@ def predict(model, loader, device, amp: bool) -> tuple[np.ndarray, np.ndarray]:
     return np.concatenate(ys), np.concatenate(ps)
 
 
+def param_groups(model, lr: float, backbone_mult: float, wd: float = 1e-2):
+    """Split parameters into four groups: backbone/head x decay/no-decay.
+
+    Two separate corrections live here.
+
+    The pretrained backbone wants a far smaller step than the freshly
+    initialised pooling and heads. A self-supervised encoder like DINOv3 arrives
+    with features that are already better than anything eight epochs on 4.4k
+    weakly-labelled studies can teach it, so a head-sized learning rate does not
+    adapt those features, it overwrites them. The published consensus for ViT /
+    ConvNeXt fine-tuning is a backbone rate of 1e-5..5e-5 against a head roughly
+    two orders higher; our uniform 3e-4 sat ~40x above that band.
+
+    Weight decay is also kept off norm parameters and biases. Decaying a
+    LayerNorm gain pulls it toward zero, which rescales that layer's output for
+    no regularisation benefit -- standard practice everywhere, and it matters
+    more than usual here because the DINOv3 ConvNeXt is all LayerNorm.
+    """
+    seen, groups = set(), {
+        ("backbone", True): [], ("backbone", False): [],
+        ("head", True): [], ("head", False): [],
+    }
+    for name, prm in model.named_parameters():
+        if not prm.requires_grad or id(prm) in seen:
+            continue
+        seen.add(id(prm))
+        where = "backbone" if name.startswith("encoder.net.") else "head"
+        # 1-D tensors are norm gains/betas and biases; 2-D+ are real weights.
+        decay = prm.ndim > 1
+        groups[(where, decay)].append(prm)
+    out = []
+    for (where, decay), prms in groups.items():
+        if not prms:
+            continue
+        out.append(dict(
+            params=prms,
+            lr=lr * (backbone_mult if where == "backbone" else 1.0),
+            weight_decay=wd if decay else 0.0,
+            name=f"{where}_{'decay' if decay else 'nodecay'}",
+        ))
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--fold", type=int, default=0)
@@ -74,7 +117,13 @@ def main() -> None:
     ap.add_argument("--epochs", type=int, default=8)
     ap.add_argument("--batch", type=int, default=2)
     ap.add_argument("--accum", type=int, default=4, help="gradient accumulation steps")
-    ap.add_argument("--lr", type=float, default=3e-4)
+    ap.add_argument("--lr", type=float, default=3e-4,
+                    help="head learning rate; the backbone gets this times "
+                         "--backbone-lr-mult")
+    ap.add_argument("--backbone-lr-mult", type=float, default=1.0,
+                    help="backbone lr as a fraction of --lr. 1.0 reproduces "
+                         "the old single-rate behaviour; ~0.05 puts a "
+                         "pretrained encoder in the usual fine-tuning band")
     ap.add_argument("--backbone", default="resnet34")
     ap.add_argument("--size", type=int, default=SIZE,
                     help="model input size; mosaics are rescaled to it if needed")
@@ -132,10 +181,15 @@ def main() -> None:
 
     model = KneeStudyModel(args.backbone, pretrained=True,
                            grad_checkpointing=args.grad_checkpointing).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-2)
+    groups = param_groups(model, args.lr, args.backbone_lr_mult)
+    opt = torch.optim.AdamW(groups)
+    print("param groups:", {g["name"]: f"{len(g['params'])}t lr={g['lr']:.2g} "
+                            f"wd={g['weight_decay']:g}" for g in groups})
     steps = max(1, len(tr_ld) // args.accum) * args.epochs
+    # OneCycle needs one max_lr per group, or it flattens them back to one rate
+    # and silently undoes the split above.
     sched = torch.optim.lr_scheduler.OneCycleLR(
-        opt, max_lr=args.lr, total_steps=steps, pct_start=0.25
+        opt, max_lr=[g["lr"] for g in groups], total_steps=steps, pct_start=0.25
     )
     scaler = torch.amp.GradScaler(device.type, enabled=amp)
 
@@ -203,7 +257,8 @@ def main() -> None:
                 # what lets checkpoints from different corpora be ensembled.
                 dict(model=model.state_dict(), backbone=args.backbone,
                      fold=args.fold, weak_auc=weak_auc, epoch=epoch,
-                     size=args.size, crop_mm=CROP_MM, targets=TARGETS),
+                     size=args.size, crop_mm=CROP_MM,
+                 lr=args.lr, backbone_lr_mult=args.backbone_lr_mult, targets=TARGETS),
                 ckpt,
             )
         # Written every epoch, not just at the end, so a session killed partway

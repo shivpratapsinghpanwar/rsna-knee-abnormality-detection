@@ -23,10 +23,12 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from rsna_knee.config import CSV, MOSAIC_EXT, PREP, RAW, SIZE  # noqa: E402
+from rsna_knee.config import (
+    CSV, MOSAIC_EXT, PREP, RAW, SERIES_SLOTS, SIZE,
+)  # noqa: E402
 from rsna_knee.dicom_io import read_series  # noqa: E402
 from rsna_knee.preprocess import (  # noqa: E402
-    crop_mm, save_mosaic, volume_to_mosaic,
+    crop_mm, normalise_laterality, save_mosaic, volume_to_mosaic,
 )
 from rsna_knee.series import select_series  # noqa: E402
 
@@ -44,9 +46,9 @@ def count_slices(split: str, df: pd.DataFrame) -> dict[str, int]:
     return counts
 
 
-def _one(args: tuple[str, str, str, str]) -> tuple[str, str]:
+def _one(args: tuple[str, str, str, str, int]) -> tuple[str, str]:
     """Worker: read one series and write its mosaic. Returns (series, status)."""
-    split, study, series, out_path = args
+    split, study, series, out_path, slot = args
     out = Path(out_path)
     if out.exists():
         return series, "skip"
@@ -55,14 +57,17 @@ def _one(args: tuple[str, str, str, str]) -> tuple[str, str]:
     if not paths:
         return series, "missing"
     try:
-        vol, spacing = read_series(paths)
+        vol, spacing, side = read_series(paths)
         if vol.size == 0:
             return series, "empty"
+        # Mirror right knees so medial is always the same side of the image.
+        plane = SERIES_SLOTS[slot][0] if slot < len(SERIES_SLOTS) else "Sagittal"
+        vol = normalise_laterality(vol, plane, side)
         # Crop to a fixed physical field before tiling, so every study shows the
         # model the same anatomy regardless of the scanner's field of view.
         vol = crop_mm(vol, spacing)
         save_mosaic(volume_to_mosaic(vol), out)
-        return series, "ok" if spacing > 0 else "ok-nospacing"
+        return series, f"ok-{side.lower() or 'unknown'}"
     except Exception as exc:  # a single bad series must not stop the corpus
         return series, f"error:{type(exc).__name__}"
 
@@ -97,7 +102,7 @@ def main() -> None:
     jobs = [
         (args.split, r.StudyInstanceUID, r.SeriesInstanceUID,
          str(out_root / r.StudyInstanceUID
-             / f"{r.slot}_{r.SeriesInstanceUID}{MOSAIC_EXT}"))
+             / f"{r.slot}_{r.SeriesInstanceUID}{MOSAIC_EXT}"), int(r.slot))
         for r in sel.itertuples()
     ]
     print(f"selected {len(jobs)} series -> {out_root} "

@@ -38,6 +38,8 @@ PREP_KERNEL = "rsna-knee-preprocess"
 # The preprocessing notebook's output mounts straight into the later stages as a
 # kernel source, so the mosaic corpus never has to be re-uploaded as a dataset.
 STAGES = {
+    # Cheap read-only check on the DICOM headers; run before a rebuild.
+    "audit": ("00_audit.ipynb", False, True, [], []),
     "preprocess": ("01_preprocess.ipynb", False, True, [], []),
     "train": ("02_train.ipynb", True, True, [], [PREP_KERNEL]),
     # The submission notebook preprocesses the hidden test set itself from raw
