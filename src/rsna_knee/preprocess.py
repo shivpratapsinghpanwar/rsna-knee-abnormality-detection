@@ -12,7 +12,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .config import GRID, MOSAIC_QUALITY, SIZE, SLICES
+from .config import CROP_MM, GRID, MOSAIC_QUALITY, SIZE, SLICES
 
 
 def pick_slice_indices(n: int, k: int = SLICES) -> list[int]:
@@ -27,6 +27,29 @@ def pick_slice_indices(n: int, k: int = SLICES) -> list[int]:
         return list(range(n)) + [n - 1] * (k - n)
     lo, hi = 0.08 * n, 0.92 * n
     return [int(round(x)) for x in np.clip(np.linspace(lo, hi, k), 0, n - 1)]
+
+
+def crop_mm(vol: np.ndarray, spacing: float, crop: float = CROP_MM) -> np.ndarray:
+    """Centre-crop a volume to a fixed physical width, in millimetres.
+
+    Without this the pipeline resizes a fixed *pixel* box to a fixed tensor, so a
+    knee imaged at 0.3 mm/px and one at 0.6 mm/px arrive at the model as
+    different-sized joints and it has to learn around the scanner rather than
+    from the anatomy. Cropping to a fixed millimetre width makes every study
+    cover the same field, which is what the published solutions do.
+
+    A spacing of 0 means the header did not say; the volume is returned untouched
+    rather than cropped on a guess. Likewise when the requested field is wider
+    than the image, since padding would invent anatomy.
+    """
+    if spacing <= 0 or vol.size == 0:
+        return vol
+    want = int(round(crop / spacing))
+    h, w = vol.shape[-2:]
+    if want >= min(h, w) or want < 16:
+        return vol
+    top, left = (h - want) // 2, (w - want) // 2
+    return vol[..., top:top + want, left:left + want]
 
 
 def resize(img: np.ndarray, size: int = SIZE) -> np.ndarray:

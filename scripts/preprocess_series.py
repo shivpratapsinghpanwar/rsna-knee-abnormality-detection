@@ -25,7 +25,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rsna_knee.config import CSV, MOSAIC_EXT, PREP, RAW, SIZE  # noqa: E402
 from rsna_knee.dicom_io import read_series  # noqa: E402
-from rsna_knee.preprocess import save_mosaic, volume_to_mosaic  # noqa: E402
+from rsna_knee.preprocess import (  # noqa: E402
+    crop_mm, save_mosaic, volume_to_mosaic,
+)
 from rsna_knee.series import select_series  # noqa: E402
 
 
@@ -53,11 +55,14 @@ def _one(args: tuple[str, str, str, str]) -> tuple[str, str]:
     if not paths:
         return series, "missing"
     try:
-        vol = read_series(paths)
+        vol, spacing = read_series(paths)
         if vol.size == 0:
             return series, "empty"
+        # Crop to a fixed physical field before tiling, so every study shows the
+        # model the same anatomy regardless of the scanner's field of view.
+        vol = crop_mm(vol, spacing)
         save_mosaic(volume_to_mosaic(vol), out)
-        return series, "ok"
+        return series, "ok" if spacing > 0 else "ok-nospacing"
     except Exception as exc:  # a single bad series must not stop the corpus
         return series, f"error:{type(exc).__name__}"
 

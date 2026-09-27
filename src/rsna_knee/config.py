@@ -106,6 +106,13 @@ SIZE = int(os.environ.get("RSNA_KNEE_SIZE", 384))
 GRID = 4
 assert GRID * GRID == SLICES
 
+# Physical field of view kept per slice, in millimetres. The published 0.942
+# solution uses 140 mm, sized so a knee fills the frame across scanners: with
+# in-plane spacing running roughly 0.3-0.6 mm/px, a fixed pixel box covers very
+# different anatomy per study, and the model ends up learning the scanner.
+# Set RSNA_KNEE_CROP_MM=0 to disable and keep the old fixed-pixel behaviour.
+CROP_MM = float(os.environ.get("RSNA_KNEE_CROP_MM", 140.0))
+
 # Storage format for the mosaic. JPEG quality 95 on 8-bit MRI is visually
 # lossless at a fraction of PNG's size; set RSNA_KNEE_EXT=.png to go back.
 MOSAIC_EXT = os.environ.get("RSNA_KNEE_EXT", ".jpg")

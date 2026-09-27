@@ -29,7 +29,9 @@ from rsna_knee.data import IMAGENET_MEAN, IMAGENET_STD  # noqa: E402
 from rsna_knee.dicom_io import read_series  # noqa: E402
 from rsna_knee.labels import ID_COL, TARGETS  # noqa: E402
 from rsna_knee.model import KneeStudyModel  # noqa: E402
-from rsna_knee.preprocess import mosaic_to_volume, volume_to_mosaic  # noqa: E402
+from rsna_knee.preprocess import (  # noqa: E402
+    crop_mm, mosaic_to_volume, volume_to_mosaic,
+)
 from rsna_knee.series import select_series  # noqa: E402
 
 
@@ -70,9 +72,12 @@ def study_slices(split: str, study: str, sel: pd.DataFrame,
         if not paths:
             continue
         try:
-            v = read_series(paths)
+            v, spacing = read_series(paths)
             if v.size == 0:
                 continue
+            # Identical crop to training; skipping it here would be train/serve
+            # skew of exactly the kind the mosaic round-trip exists to prevent.
+            v = crop_mm(v, spacing)
             # Round-tripping through the mosaic guarantees the tensor is identical
             # to what training saw, rather than merely similar.
             out[r.slot] = mosaic_to_volume(volume_to_mosaic(v, size=size), size=size)
