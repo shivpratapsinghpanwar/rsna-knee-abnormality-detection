@@ -32,7 +32,7 @@ from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from rsna_knee.config import CSV, SIZE, WORK  # noqa: E402
+from rsna_knee.config import CROP_MM, CSV, SIZE, WORK  # noqa: E402
 from rsna_knee.data import (  # noqa: E402
     KneeStudyDataset, collate, index_corpus, make_folds, report_groups,
 )
@@ -203,7 +203,7 @@ def main() -> None:
                 # what lets checkpoints from different corpora be ensembled.
                 dict(model=model.state_dict(), backbone=args.backbone,
                      fold=args.fold, weak_auc=weak_auc, epoch=epoch,
-                     size=args.size, targets=TARGETS),
+                     size=args.size, crop_mm=CROP_MM, targets=TARGETS),
                 ckpt,
             )
         # Written every epoch, not just at the end, so a session killed partway

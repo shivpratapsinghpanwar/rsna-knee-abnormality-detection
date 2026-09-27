@@ -82,7 +82,7 @@ def main() -> None:
     oof = np.full((len(labels), len(TARGETS)), np.nan, dtype=np.float32)
     covered = np.zeros(len(labels), dtype=bool)
 
-    for (model, size), f in zip(models, folds_of):
+    for (model, size, _crop), f in zip(models, folds_of):
         idx = np.where(fold == f)[0]
         print(f"fold {f}: scoring {len(idx)} held-out studies at size {size}")
         for start in range(0, len(idx), args.batch):
