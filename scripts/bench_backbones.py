@@ -43,14 +43,14 @@ STUDIES_PER_EPOCH = 3525
 
 
 def trial(name: str, note: str, size: int, batch: int, ckpt: bool,
-          steps: int = 2, epochs: int = 8) -> None:
+          steps: int = 2, epochs: int = 8, chunk: int = 0) -> None:
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
     dev = torch.device("cuda")
     model = opt = vol = None
     try:
         model = KneeStudyModel(name, pretrained=False,
-                               grad_checkpointing=ckpt).to(dev)
+                               grad_checkpointing=ckpt, chunk=chunk).to(dev)
         params = sum(p.numel() for p in model.parameters()) / 1e6
         opt = torch.optim.AdamW(model.parameters(), lr=1e-4)
         scaler = torch.amp.GradScaler("cuda")
@@ -76,7 +76,7 @@ def trial(name: str, note: str, size: int, batch: int, ckpt: bool,
         print(f"  {name:34s} {params:6.1f}M  peak {peak:5.2f} GB  "
               f"{per:5.2f} s/step  {hrs:5.1f} h per fold   {note}", flush=True)
     except torch.OutOfMemoryError:
-        print(f"  {name:34s}  OOM at batch={batch} ckpt={int(ckpt)}", flush=True)
+        print(f"  {name:34s}  OOM at batch={batch} ckpt={int(ckpt)} chunk={chunk}", flush=True)
     except Exception as exc:
         print(f"  {name:34s}  {type(exc).__name__}: {str(exc)[:70]}", flush=True)
     finally:
@@ -91,6 +91,8 @@ def main() -> None:
     ap.add_argument("--grad-checkpointing", action="store_true")
     ap.add_argument("--epochs", type=int, default=8,
                     help="epochs assumed when projecting hours per fold")
+    ap.add_argument("--chunk", type=int, default=0,
+                    help="images per backbone call (0 = whole study)")
     ap.add_argument("--models", nargs="*", default=None,
                     help="timm names to test instead of the built-in candidates")
     args = ap.parse_args()
@@ -104,7 +106,7 @@ def main() -> None:
              else CANDIDATES)
     for name, note in cands:
         trial(name, note, args.size, args.batch, args.grad_checkpointing,
-              epochs=args.epochs)
+              epochs=args.epochs, chunk=args.chunk)
 
 
 if __name__ == "__main__":

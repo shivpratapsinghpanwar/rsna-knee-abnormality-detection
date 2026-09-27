@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import timm
 import torch
+from torch.utils.checkpoint import checkpoint
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -62,8 +63,12 @@ class SeriesEncoder(nn.Module):
     """
 
     def __init__(self, backbone: str = "resnet34", pretrained: bool = True,
-                 drop: float = 0.0, grad_checkpointing: bool = False):
+                 drop: float = 0.0, grad_checkpointing: bool = False,
+                 chunk: int = 0):
         super().__init__()
+        # Images per backbone call. See forward() for why this is the lever that
+        # decides whether a heavy backbone fits at all.
+        self.chunk = int(chunk)
         self.net = timm.create_model(
             backbone, pretrained=pretrained, num_classes=0, in_chans=3,
             drop_rate=drop,
@@ -86,7 +91,31 @@ class SeriesEncoder(nn.Module):
         prev = torch.cat([vol[:, :1], vol[:, :-1]], dim=1)
         nxt = torch.cat([vol[:, 1:], vol[:, -1:]], dim=1)
         x = torch.stack([prev, vol, nxt], dim=2).reshape(b * s, 3, h, w)
-        return self.net(x).reshape(b, s, self.dim)
+
+        if not self.chunk or x.shape[0] <= self.chunk:
+            return self.net(x).reshape(b, s, self.dim)
+
+        # One study is 64 images, and they all go through the backbone before the
+        # MIL pooling can run, so the whole study's activations are live at once.
+        # That is what puts a heavy backbone over a 16 GB card even with the
+        # backbone's own checkpointing on.
+        #
+        # Splitting the call is not enough by itself: autograd would still hold
+        # every chunk's checkpoint boundaries simultaneously, so the stored total
+        # would be unchanged. Each chunk is therefore wrapped in its own
+        # checkpoint, which leaves only the chunk's input and its (B*S, D)
+        # features alive between forward and backward -- features are ~200 KB for
+        # a whole study. Peak then tracks one chunk instead of the study, and the
+        # cost is one extra recompute of chunks that were going to be recomputed
+        # anyway.
+        if self.training and torch.is_grad_enabled():
+            outs = [checkpoint(self.net, c, use_reentrant=False)
+                    for c in x.split(self.chunk)]
+        else:
+            # Nothing is stored for backward under no_grad, so checkpointing
+            # would only cost time. Chunking still caps the transient peak.
+            outs = [self.net(c) for c in x.split(self.chunk)]
+        return torch.cat(outs, dim=0).reshape(b, s, self.dim)
 
 
 class KneeStudyModel(nn.Module):
@@ -94,10 +123,11 @@ class KneeStudyModel(nn.Module):
 
     def __init__(self, backbone: str = "resnet34", pretrained: bool = True,
                  n_targets: int = N_TARGETS, drop: float = 0.1,
-                 grad_checkpointing: bool = False):
+                 grad_checkpointing: bool = False, chunk: int = 0):
         super().__init__()
         self.encoder = SeriesEncoder(backbone, pretrained, drop=drop,
-                                     grad_checkpointing=grad_checkpointing)
+                                     grad_checkpointing=grad_checkpointing,
+                                     chunk=chunk)
         dim = self.encoder.dim
 
         self.slice_pool = TargetAttentionPool(dim, n_targets)

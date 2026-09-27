@@ -135,6 +135,9 @@ def main() -> None:
     # best checkpoint so far is already written and the run is still useful.
     ap.add_argument("--max-minutes", type=float, default=0,
                     help="stop after the epoch that crosses this (0 = no limit)")
+    ap.add_argument("--encoder-chunk", type=int, default=0,
+                    help="images per backbone call (0 = the whole study at "
+                         "once). Caps activation peak so heavy backbones fit")
     ap.add_argument("--grad-checkpointing", action="store_true",
                     help="recompute activations; ~30%% slower, ~half the memory")
     ap.add_argument("--pos-weight-cap", type=float, default=0,
@@ -180,7 +183,8 @@ def main() -> None:
                        num_workers=args.workers, collate_fn=collate, pin_memory=amp)
 
     model = KneeStudyModel(args.backbone, pretrained=True,
-                           grad_checkpointing=args.grad_checkpointing).to(device)
+                           grad_checkpointing=args.grad_checkpointing,
+                           chunk=args.encoder_chunk).to(device)
     groups = param_groups(model, args.lr, args.backbone_lr_mult)
     opt = torch.optim.AdamW(groups)
     print("param groups:", {g["name"]: f"{len(g['params'])}t lr={g['lr']:.2g} "
@@ -258,7 +262,8 @@ def main() -> None:
                 dict(model=model.state_dict(), backbone=args.backbone,
                      fold=args.fold, weak_auc=weak_auc, epoch=epoch,
                      size=args.size, crop_mm=CROP_MM,
-                 lr=args.lr, backbone_lr_mult=args.backbone_lr_mult, targets=TARGETS),
+                 lr=args.lr, backbone_lr_mult=args.backbone_lr_mult,
+                 encoder_chunk=args.encoder_chunk, targets=TARGETS),
                 ckpt,
             )
         # Written every epoch, not just at the end, so a session killed partway
