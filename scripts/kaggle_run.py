@@ -47,7 +47,10 @@ STAGES = {
     # Same notebook, but reading locally-trained weights uploaded as a dataset
     # instead of the Kaggle training kernels. Kept separate so a submission is
     # unambiguously one configuration rather than a blend of two eras.
-    "submitlocal": ("03_submit.ipynb", False, False, ["rsna-knee-train-local"], []),
+    # GPU: a CPU submission at 384 exceeded the competition's runtime limit and
+    # scored nothing. Inference cost is part of the design here, not an
+    # afterthought -- five models at 384 is only affordable on a GPU.
+    "submitlocal": ("03_submit.ipynb", True, False, ["rsna-knee-train-local"], []),
     # Internet on: the labeller downloads its weights. That is fine because the
     # labeller runs at training time only and never touches the submission.
     "label": ("04_label.ipynb", True, True, [], []),
