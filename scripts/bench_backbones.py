@@ -43,7 +43,7 @@ STUDIES_PER_EPOCH = 3525
 
 
 def trial(name: str, note: str, size: int, batch: int, ckpt: bool,
-          steps: int = 2) -> None:
+          steps: int = 2, epochs: int = 8) -> None:
     torch.cuda.empty_cache()
     torch.cuda.reset_peak_memory_stats()
     dev = torch.device("cuda")
@@ -72,9 +72,9 @@ def trial(name: str, note: str, size: int, batch: int, ckpt: bool,
         torch.cuda.synchronize()
         per = (time.time() - t) / steps
         peak = torch.cuda.max_memory_allocated() / 1e9
-        hrs = STUDIES_PER_EPOCH / batch * per * 8 / 3600
+        hrs = STUDIES_PER_EPOCH / batch * per * epochs / 3600
         print(f"  {name:34s} {params:6.1f}M  peak {peak:5.2f} GB  "
-              f"{per:5.2f} s/step  {hrs:4.1f} h per fold   {note}", flush=True)
+              f"{per:5.2f} s/step  {hrs:5.1f} h per fold   {note}", flush=True)
     except torch.OutOfMemoryError:
         print(f"  {name:34s}  OOM at batch={batch} ckpt={int(ckpt)}", flush=True)
     except Exception as exc:
@@ -89,6 +89,10 @@ def main() -> None:
     ap.add_argument("--size", type=int, default=384)
     ap.add_argument("--batch", type=int, default=1)
     ap.add_argument("--grad-checkpointing", action="store_true")
+    ap.add_argument("--epochs", type=int, default=8,
+                    help="epochs assumed when projecting hours per fold")
+    ap.add_argument("--models", nargs="*", default=None,
+                    help="timm names to test instead of the built-in candidates")
     args = ap.parse_args()
 
     free, total = torch.cuda.mem_get_info()
@@ -96,8 +100,11 @@ def main() -> None:
     print(f"size={args.size} batch={args.batch} "
           f"({MAX_SERIES * SLICES * args.batch} images per step), "
           f"8 epochs per fold\n")
-    for name, note in CANDIDATES:
-        trial(name, note, args.size, args.batch, args.grad_checkpointing)
+    cands = ([(m, "requested") for m in args.models] if args.models
+             else CANDIDATES)
+    for name, note in cands:
+        trial(name, note, args.size, args.batch, args.grad_checkpointing,
+              epochs=args.epochs)
 
 
 if __name__ == "__main__":

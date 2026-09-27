@@ -40,6 +40,8 @@ PREP_KERNEL = "rsna-knee-preprocess"
 STAGES = {
     # Cheap read-only check on the DICOM headers; run before a rebuild.
     "audit": ("00_audit.ipynb", False, True, [], []),
+    # GPU, no data: measures what a CoAtNet costs on the card we would use.
+    "bench": ("00b_bench.ipynb", True, True, [], []),
     "preprocess": ("01_preprocess.ipynb", False, True, [], []),
     "train": ("02_train.ipynb", True, True, [], [PREP_KERNEL]),
     # The submission notebook preprocesses the hidden test set itself from raw
