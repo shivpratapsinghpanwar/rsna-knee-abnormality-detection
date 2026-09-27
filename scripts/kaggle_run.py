@@ -129,6 +129,10 @@ def main() -> None:
     ap.add_argument("--all-folds", action="store_true",
                     help="with --status on train: report every fold")
     ap.add_argument("--wait", action="store_true", help="poll until the run ends")
+    ap.add_argument("--submit", metavar="MESSAGE", default="",
+                    help="after a submit/submitlocal run completes, enter it in "
+                         "the competition with this description and poll for the "
+                         "public score. Implies --wait")
     ap.add_argument("--poll", type=int, default=120, help="seconds between polls")
     args = ap.parse_args()
 
@@ -209,20 +213,68 @@ def main() -> None:
     err = getattr(resp, "error", None)
     if err:
         raise SystemExit(f"push failed: {err}")
+    # The version number comes back from the push and is the only reliable source:
+    # kernels_list reports current_version_number as 0.
+    version = next((v for v in (getattr(resp, "version_number", None),
+                                getattr(resp, "versionNumber", None)) if v), None)
     print(f"  pushed -> https://www.kaggle.com/code/{ref}")
     shutil.rmtree(stage_dir, ignore_errors=True)
 
-    if not args.wait:
-        print(f"\nnot waiting. check with:\n"
-              f"  python scripts/kaggle_run.py {args.stage} --status")
+    if args.submit and args.stage not in ("submit", "submitlocal"):
+        raise SystemExit("--submit only applies to the submit/submitlocal stages")
+    if not args.wait and not args.submit:
+        print()
+        print("not waiting. check with:")
+        print(f"  python scripts/kaggle_run.py {args.stage} --status")
         return
 
     print("polling ...")
+    st = ""
     while True:
         time.sleep(args.poll)
         st, msg = status(api, ref)
         print(f"  {time.strftime('%H:%M:%S')}  {st}  {msg}", flush=True)
         if st.lower() in ("complete", "error", "cancelacknowledged"):
+            break
+
+    if not args.submit:
+        return
+    if st.lower() != "complete":
+        raise SystemExit(f"not submitting: the kernel ended {st}")
+    if not version:
+        raise SystemExit("the push reported no version number to submit")
+
+    # A code competition is entered by naming a kernel version. The grader re-runs
+    # the notebook itself, so "submission.csv" is the name of the file that run is
+    # expected to produce, not a file being uploaded from here.
+    print()
+    print(f"submitting {ref} v{version}: {args.submit!r}")
+    api.competition_submit_code("submission.csv", args.submit, COMPETITION,
+                                kernel=ref, kernel_version=version, quiet=True)
+    print("submitted. The grader re-runs the notebook, so a score takes a while.")
+    while True:
+        time.sleep(args.poll)
+        try:
+            subs = api.competition_submissions(COMPETITION)
+        except Exception as exc:
+            print(f"  {time.strftime('%H:%M:%S')}  poll failed: "
+                  f"{type(exc).__name__}", flush=True)
+            continue
+        me = next((x for x in subs
+                   if str(getattr(x, "description", "")) == args.submit), None)
+        if me is None:
+            print(f"  {time.strftime('%H:%M:%S')}  not listed yet", flush=True)
+            continue
+        st2 = str(getattr(me, "status", "")).rsplit(".", 1)[-1].upper()
+        score = str(getattr(me, "public_score", "") or "")
+        oops = str(getattr(me, "error_description", "") or "")
+        print(f"  {time.strftime('%H:%M:%S')}  {st2}  {score}  {oops}"[:130],
+              flush=True)
+        if st2 in ("COMPLETE", "ERROR"):
+            print()
+            print(f"public score: {score or 'none'}")
+            if oops:
+                print(f"error: {oops}")
             break
 
 
