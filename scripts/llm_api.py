@@ -61,7 +61,9 @@ ENV_FILES = [Path(r"D:\kaggle_c\.env"), REPO_ROOT / ".env", Path(".env")]
 # `git add -A` would have committed it to a repo that is pushed to GitHub.
 KEY_DIRS = [REPO_ROOT / "groq", REPO_ROOT / "gemini", REPO_ROOT / "secrets",
             Path(r"D:\kaggle_c")]
-KEY_HINTS = {"GROQ_API_KEY": "groq", "GEMINI_API_KEY": "gemini"}
+KEY_HINTS = {"GROQ_API_KEY": "groq", "GEMINI_API_KEY": "gemini",
+             # matches open_router_key.txt as well as openrouter_key.txt
+             "OPENROUTER_API_KEY": "router"}
 
 PROVIDERS = {
     # Groq: OpenAI-compatible, free tier, serves open models fast.
@@ -78,6 +80,15 @@ PROVIDERS = {
         url=os.environ.get("RSNA_LLM_URL",
                            "https://api.openai.com/v1/chat/completions"),
         default_model="gpt-4o-mini",
+        style="openai",
+    ),
+    # OpenRouter: one OpenAI-compatible endpoint fronting many model families,
+    # which is the cheapest way to add blend diversity -- different families
+    # disagree in different places, and that is the whole mechanism.
+    "openrouter": dict(
+        env="OPENROUTER_API_KEY",
+        url="https://openrouter.ai/api/v1/chat/completions",
+        default_model="qwen/qwen-2.5-72b-instruct",
         style="openai",
     ),
     "gemini": dict(
