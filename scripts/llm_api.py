@@ -52,16 +52,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 ENV_FILES = [Path(r"D:\kaggle_c\.env"), REPO_ROOT / ".env", Path(".env")]
 
 # Bare-token files: the whole file is the key, so the variable it maps to has to
-# come from the path. All of these live under gitignored directories -- a key
-# dropped in as groq/Groq_key.txt matched none of the original ignore patterns
-# and a routine `git add -A` would have committed it.
-KEY_FILES = {
-    "GROQ_API_KEY": [REPO_ROOT / "groq" / "Groq_key.txt",
-                     Path(r"D:\kaggle_c\groq_key.txt")],
-    "GEMINI_API_KEY": [REPO_ROOT / "gemini" / "Gemini_key.txt",
-                       REPO_ROOT / "groq" / "Gemini_key.txt",
-                       Path(r"D:\kaggle_c\gemini_key.txt")],
-}
+# be inferred from the filename. Keys get dropped in with whatever capitalisation
+# is convenient (Groq_key.txt, gemini_key.txt), so match case-insensitively on a
+# substring rather than listing exact paths.
+#
+# Every directory searched here is gitignored. A key dropped in as
+# groq/Groq_key.txt matched none of the original ignore patterns, and a routine
+# `git add -A` would have committed it to a repo that is pushed to GitHub.
+KEY_DIRS = [REPO_ROOT / "groq", REPO_ROOT / "gemini", REPO_ROOT / "secrets",
+            Path(r"D:\kaggle_c")]
+KEY_HINTS = {"GROQ_API_KEY": "groq", "GEMINI_API_KEY": "gemini"}
 
 PROVIDERS = {
     # Groq: OpenAI-compatible, free tier, serves open models fast.
@@ -102,21 +102,27 @@ def load_env() -> None:
             key, val = line.split("=", 1)
             os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
 
-    for var, paths in KEY_FILES.items():
+    for var, hint in KEY_HINTS.items():
         if os.environ.get(var):
             continue
-        for path in paths:
-            if not path.exists():
+        for d in KEY_DIRS:
+            if not d.is_dir():
                 continue
-            # A bare-token file may still contain KEY=value; accept either, and
-            # take the first non-comment line either way.
-            for line in path.read_text(encoding="utf-8").splitlines():
-                line = line.strip()
-                if not line or line.startswith("#"):
+            for path in sorted(d.glob("*.txt")):
+                name = path.name.lower()
+                if hint not in name or "key" not in name:
                     continue
-                os.environ[var] = (line.split("=", 1)[1] if "=" in line
-                                   else line).strip().strip('"').strip("'")
-                break
+                # A bare-token file may still hold KEY=value; accept either, and
+                # take the first non-comment line regardless.
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    os.environ[var] = (line.split("=", 1)[1] if "=" in line
+                                       else line).strip().strip('"').strip("'")
+                    break
+                if os.environ.get(var):
+                    break
             if os.environ.get(var):
                 break
 
@@ -152,15 +158,23 @@ def call(cfg: dict, key: str, model: str, messages: list[dict],
                                 if m["role"] == "system"), "")
                 user_msg = next(m["content"] for m in messages
                                 if m["role"] == "user")
+                # Same trap as the gpt-oss models: recent Gemini models think
+                # before answering, and a 96-token budget was spent entirely on
+                # that, returning a truncated "ACL=0" or nothing at all. Ask for
+                # room, and turn thinking off where the model supports it -- this
+                # is an extraction task, not one that benefits from deliberation.
                 r = session().post(
                     f"{cfg['url']}/{model}:generateContent?key={key}",
                     json={
                         "system_instruction": {"parts": [{"text": sys_msg}]},
                         "contents": [{"parts": [{"text": user_msg}]}],
-                        "generationConfig": {"temperature": temperature,
-                                             "maxOutputTokens": 96},
+                        "generationConfig": {
+                            "temperature": temperature,
+                            "maxOutputTokens": 1024,
+                            "thinkingConfig": {"thinkingBudget": 0},
+                        },
                     },
-                    timeout=120,
+                    timeout=180,
                 )
             if r.status_code == 429:
                 # Free tiers rate-limit by design; honour Retry-After when given.
@@ -175,7 +189,10 @@ def call(cfg: dict, key: str, model: str, messages: list[dict],
                 # content empty but the scores are often already in `reasoning`.
                 # The parser only looks for KEY=digit, so reading it is safe.
                 return msg.get("content") or msg.get("reasoning") or ""
-            return data["candidates"][0]["content"]["parts"][0]["text"]
+            # A thinking model can return a candidate whose parts carry no
+            # text, so join whatever text parts exist rather than indexing [0].
+            parts = data["candidates"][0].get("content", {}).get("parts", [])
+            return "".join(p.get("text", "") for p in parts)
         except Exception:
             if attempt == attempts - 1:
                 return ""
