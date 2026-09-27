@@ -32,9 +32,9 @@ from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from rsna_knee.config import SIZE, WORK  # noqa: E402
+from rsna_knee.config import CSV, SIZE, WORK  # noqa: E402
 from rsna_knee.data import (  # noqa: E402
-    KneeStudyDataset, collate, index_corpus, make_folds,
+    KneeStudyDataset, collate, index_corpus, make_folds, report_groups,
 )
 from rsna_knee.labels import TARGETS  # noqa: E402
 from rsna_knee.model import (  # noqa: E402
@@ -114,7 +114,10 @@ def main() -> None:
           f"{int(labels.has_gold.sum())} with gold")
 
     n_folds = min(args.folds, max(2, len(labels) // 2))
-    fold = make_folds(labels, n_folds, args.seed)
+    # Group by report hash: duplicates across folds are memorised, not
+    # predicted, and inflate every offline number.
+    fold = make_folds(labels, n_folds, args.seed,
+                      groups=report_groups(labels, CSV))
     tr_df = labels[fold != args.fold].reset_index(drop=True)
     va_df = labels[fold == args.fold].reset_index(drop=True)
     print(f"fold {args.fold}/{n_folds}: train {len(tr_df)}  val {len(va_df)}")

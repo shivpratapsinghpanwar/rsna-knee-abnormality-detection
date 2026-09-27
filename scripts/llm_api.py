@@ -137,8 +137,15 @@ def session() -> requests.Session:
 
 
 def call(cfg: dict, key: str, model: str, messages: list[dict],
-         temperature: float, attempts: int = 6) -> str:
-    """One chat completion, retrying on rate limits and transient errors."""
+         temperature: float, attempts: int = 6) -> str | None:
+    """One chat completion, retrying on rate limits and transient errors.
+
+    Returns None when every attempt failed, which must stay distinguishable from
+    a successful empty answer. Conflating them is not a cosmetic bug: parse("")
+    yields all zeros, and writing that as a label turns an API failure into a
+    confident "no findings" -- which is how a 40% failure rate on a hosted model
+    came back looking like a model that was bad at the task.
+    """
     for attempt in range(attempts):
         try:
             if cfg["style"] == "openai":
@@ -195,9 +202,9 @@ def call(cfg: dict, key: str, model: str, messages: list[dict],
             return "".join(p.get("text", "") for p in parts)
         except Exception:
             if attempt == attempts - 1:
-                return ""
+                return None
             time.sleep(min(30, 3 * (attempt + 1)))
-    return ""
+    return None
 
 
 def main() -> None:
@@ -285,34 +292,49 @@ def main() -> None:
     lock = threading.Lock()
     t0 = time.time()
 
-    def one(rec) -> dict:
+    def one(rec) -> dict | None:
+        """Label one report, or return None if every attempt failed.
+
+        A None is dropped rather than written, so the study stays in `todo` and
+        a later resume retries it. Writing zeros here would silently record an
+        API failure as a confident negative.
+        """
         sid, report = rec
         totals = {t: 0.0 for t in TARGETS}
         got = 0
         for _ in range(args.samples):
             text = call(cfg, key, model, build_prompt(report, args.scale),
                         args.temperature)
-            if not text:
+            if text is None:
                 continue
-            for t, v in parse(text, args.scale).items():
+            parsed = parse(text, args.scale)
+            # An all-zero parse from a non-empty response is a real "nothing
+            # found"; an all-zero parse from an empty one is a failure.
+            if not text.strip():
+                continue
+            for t, v in parsed.items():
                 totals[t] += v
             got += 1
-        if got:
-            totals = {t: v / got for t, v in totals.items()}
-        return {ID_COL: sid, **totals}
+        if not got:
+            return None
+        return {ID_COL: sid, **{t: v / got for t, v in totals.items()}}
 
     recs = list(zip(todo[ID_COL], todo[REPORT_COL]))
+    failed = 0
     with ThreadPoolExecutor(args.workers) as ex:
         for i, row in enumerate(ex.map(one, recs), 1):
             with lock:
-                rows.append(row)
+                if row is None:
+                    failed += 1
+                else:
+                    rows.append(row)
                 if i % 25 == 0 or i == len(recs):
                     pd.DataFrame(rows).to_csv(out_path, index=False)
                     el = time.time() - t0
                     rate = i / el if el else 0
                     print(f"  {i}/{len(recs)}  {rate:.1f}/s  "
-                          f"eta {(len(recs) - i) / rate / 60 if rate else 0:.0f}m",
-                          flush=True)
+                          f"eta {(len(recs) - i) / rate / 60 if rate else 0:.0f}m"
+                          f"  failed {failed}", flush=True)
 
     pd.DataFrame(rows).to_csv(out_path, index=False)
     print(f"\nwrote {out_path}  ({len(rows)} rows)")

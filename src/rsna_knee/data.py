@@ -39,17 +39,67 @@ def index_corpus(split: str = "train") -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["StudyInstanceUID", "slot", "path"])
 
 
-def make_folds(labels: pd.DataFrame, n_folds: int = 5, seed: int = 0) -> np.ndarray:
+def report_groups(labels: pd.DataFrame, csv_dir) -> np.ndarray:
+    """Hash of each study's report, for grouping folds.
+
+    Studies sharing a byte-identical report must not be split across folds: the
+    labels are derived from that report, so a duplicate in both train and
+    validation is memorised rather than predicted.
+    """
+    import hashlib
+
+    from .labels import ID_COL, REPORT_COL
+
+    tr = pd.read_csv(csv_dir / "train.csv")[[ID_COL, REPORT_COL]]
+    merged = labels[[ID_COL]].merge(tr, on=ID_COL, how="left")
+    return merged[REPORT_COL].map(
+        lambda s: hashlib.md5(str(s).strip().encode()).hexdigest()
+    ).to_numpy()
+
+
+def make_folds(labels: pd.DataFrame, n_folds: int = 5, seed: int = 0,
+               groups: np.ndarray | None = None) -> np.ndarray:
     """Multilabel-stratified fold assignment, one fold per study.
 
     Plain KFold would leave rare targets (MCL at 4.7%, Fracture at 6.7%) unevenly
     spread and make per-fold AUC for them meaningless. This greedily assigns each
     study to whichever fold is currently most short of its positives, which keeps
     every target's rate close to the corpus rate in every fold.
+
+    `groups` keeps studies that must not be separated in the same fold. Pass the
+    report hash: 49 groups of studies share a byte-identical report (one group has
+    37 members, 4.1% of the corpus is affected), and since the labels are derived
+    from the report, a duplicate spanning train and validation is memorised rather
+    than predicted. That inflates every local number and is part of why offline
+    metrics kept disagreeing with the leaderboard.
     """
     y = (labels[[f"weak_{t}" for t in TARGETS]].to_numpy() >= 0.5).astype(int)
     n, t = y.shape
     rng = np.random.default_rng(seed)
+
+    if groups is not None:
+        # Assign whole groups, then expand back to studies. Groups are ordered by
+        # size so the large ones are placed while the folds are still flexible.
+        groups = np.asarray(groups)
+        uniq, inv = np.unique(groups, return_inverse=True)
+        gy = np.zeros((len(uniq), t), dtype=int)
+        for i in range(n):
+            gy[inv[i]] += y[i]
+        gsize = np.bincount(inv, minlength=len(uniq))
+        order = np.argsort(-gsize)
+        want = gy.sum(0) / n_folds
+        have = np.zeros((n_folds, t))
+        count = np.zeros(n_folds)
+        gfold = np.empty(len(uniq), dtype=int)
+        for gi in order:
+            deficit = (((want - have) * gy[gi]).sum(1) if gy[gi].any()
+                       else -count)
+            best = int(np.argmax(deficit + 1e-6 * (count.max() - count)))
+            gfold[gi] = best
+            have[best] += gy[gi]
+            count[best] += gsize[gi]
+        return gfold[inv]
+
     order = rng.permutation(n)
     # Rarest-first ordering matters: rare targets must be balanced before common
     # ones consume the remaining capacity.

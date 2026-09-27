@@ -27,8 +27,10 @@ from sklearn.metrics import roc_auc_score
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from rsna_knee.config import MAX_SERIES, WORK  # noqa: E402
-from rsna_knee.data import index_corpus, make_folds  # noqa: E402
+from rsna_knee.config import CSV, MAX_SERIES, WORK  # noqa: E402
+from rsna_knee.data import (  # noqa: E402
+    index_corpus, make_folds, report_groups,
+)
 from rsna_knee.labels import ID_COL, TARGETS  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -70,7 +72,8 @@ def main() -> None:
     labels = labels.reset_index(drop=True)
 
     # Must match training exactly, or "out-of-fold" is a lie.
-    fold = make_folds(labels, args.folds, args.seed)
+    fold = make_folds(labels, args.folds, args.seed,
+                      groups=report_groups(labels, CSV))
     by_study: dict[str, dict[int, str]] = {}
     for r in corpus.itertuples():
         by_study.setdefault(r.StudyInstanceUID, {})[r.slot] = r.path
