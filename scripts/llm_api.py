@@ -46,7 +46,22 @@ from rsna_knee.labels import ID_COL, REPORT_COL, TARGETS  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from llm_label import build_prompt, parse  # noqa: E402
 
-ENV_FILES = [Path(r"D:\kaggle_c\.env"), Path(".env")]
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# KEY=value files.
+ENV_FILES = [Path(r"D:\kaggle_c\.env"), REPO_ROOT / ".env", Path(".env")]
+
+# Bare-token files: the whole file is the key, so the variable it maps to has to
+# come from the path. All of these live under gitignored directories -- a key
+# dropped in as groq/Groq_key.txt matched none of the original ignore patterns
+# and a routine `git add -A` would have committed it.
+KEY_FILES = {
+    "GROQ_API_KEY": [REPO_ROOT / "groq" / "Groq_key.txt",
+                     Path(r"D:\kaggle_c\groq_key.txt")],
+    "GEMINI_API_KEY": [REPO_ROOT / "gemini" / "Gemini_key.txt",
+                       REPO_ROOT / "groq" / "Gemini_key.txt",
+                       Path(r"D:\kaggle_c\gemini_key.txt")],
+}
 
 PROVIDERS = {
     # Groq: OpenAI-compatible, free tier, serves open models fast.
@@ -75,7 +90,8 @@ PROVIDERS = {
 
 
 def load_env() -> None:
-    """Read KEY=value lines from a local .env, without overriding the shell."""
+    """Load keys from .env files and from bare-token files, without overriding
+    anything already set in the shell."""
     for path in ENV_FILES:
         if not path.exists():
             continue
@@ -85,6 +101,24 @@ def load_env() -> None:
                 continue
             key, val = line.split("=", 1)
             os.environ.setdefault(key.strip(), val.strip().strip('"').strip("'"))
+
+    for var, paths in KEY_FILES.items():
+        if os.environ.get(var):
+            continue
+        for path in paths:
+            if not path.exists():
+                continue
+            # A bare-token file may still contain KEY=value; accept either, and
+            # take the first non-comment line either way.
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                os.environ[var] = (line.split("=", 1)[1] if "=" in line
+                                   else line).strip().strip('"').strip("'")
+                break
+            if os.environ.get(var):
+                break
 
 
 _tl = threading.local()
@@ -102,12 +136,16 @@ def call(cfg: dict, key: str, model: str, messages: list[dict],
     for attempt in range(attempts):
         try:
             if cfg["style"] == "openai":
+                # Reasoning models (the gpt-oss family) spend tokens thinking
+                # before answering, and a tight budget is consumed entirely by
+                # that -- the request succeeds with an empty `content`, which
+                # looks exactly like a bad key. Budget for it.
                 r = session().post(
                     cfg["url"],
                     headers={"Authorization": f"Bearer {key}"},
                     json={"model": model, "messages": messages,
-                          "temperature": temperature, "max_tokens": 96},
-                    timeout=120,
+                          "temperature": temperature, "max_tokens": 1024},
+                    timeout=180,
                 )
             else:  # gemini
                 sys_msg = next((m["content"] for m in messages
@@ -132,7 +170,11 @@ def call(cfg: dict, key: str, model: str, messages: list[dict],
             r.raise_for_status()
             data = r.json()
             if cfg["style"] == "openai":
-                return data["choices"][0]["message"]["content"]
+                msg = data["choices"][0]["message"]
+                # A reasoning model that ran out of budget mid-thought leaves
+                # content empty but the scores are often already in `reasoning`.
+                # The parser only looks for KEY=digit, so reading it is safe.
+                return msg.get("content") or msg.get("reasoning") or ""
             return data["candidates"][0]["content"]["parts"][0]["text"]
         except Exception:
             if attempt == attempts - 1:

@@ -8,9 +8,19 @@ hf/
 *.ckpt
 __pycache__/
 .venv/
+.kaggle_stage/
+.kernel_stage/
+.claude/
+
+# Credentials. Broad on purpose: a key was dropped into the repo as
+# groq/Groq_key.txt, which none of the earlier patterns caught, and a routine
+# `git add -A` would have pushed it to GitHub.
 kaggle.json
 .env
 *.env
-.claude/
-.kaggle_stage/
-.kernel_stage/
+groq/
+gemini/
+secrets/
+*key*.txt
+*token*.txt
+*secret*
