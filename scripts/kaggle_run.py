@@ -129,6 +129,8 @@ def main() -> None:
     ap.add_argument("--all-folds", action="store_true",
                     help="with --status on train: report every fold")
     ap.add_argument("--wait", action="store_true", help="poll until the run ends")
+    ap.add_argument("--tta", default="",
+                    help="submit/submitlocal: comma-separated TTA transforms")
     ap.add_argument("--submit", metavar="MESSAGE", default="",
                     help="after a submit/submitlocal run completes, enter it in "
                          "the competition with this description and poll for the "
@@ -172,12 +174,17 @@ def main() -> None:
     stage_dir.mkdir(parents=True)
 
     text = src.read_text(encoding="utf-8")
-    if args.stage == "train":
+    # Notebook knobs to rewrite, if any. Empty for stages that take none, so the
+    # substitution below is a no-op rather than a NameError.
+    subs: dict[str, str] = {}
+    if args.stage in ("submit", "submitlocal") and args.tta:
+        subs = {"TTA": repr(args.tta)}
+    elif args.stage == "train":
         # The notebook declares its knobs as plain assignments. Edit them through
         # the parsed notebook, not with a regex over the raw file: the .ipynb is
         # JSON, so a string like BACKBONE = "resnet34" is stored with escaped
         # quotes and a naive substitution corrupts the document.
-        subs: dict[str, str] = {"FOLD": str(args.fold)}
+        subs = {"FOLD": str(args.fold)}
         if args.backbone:
             subs["BACKBONE"] = repr(args.backbone)
         if args.batch:
@@ -185,19 +192,20 @@ def main() -> None:
         if args.posw >= 0:
             subs["POSW"] = str(args.posw)
 
-        doc = json.loads(text)
-        applied = {k: False for k in subs}
-        for cell in doc["cells"]:
-            for i, line in enumerate(cell.get("source", [])):
-                for key, val in subs.items():
-                    if applied[key] or not line.startswith(f"{key} = "):
-                        continue
-                    end = "\n" if line.endswith("\n") else ""
-                    cell["source"][i] = f"{key} = {val}{end}"
-                    applied[key] = True
-        missing = [k for k, ok in applied.items() if not ok]
-        if missing:
-            raise SystemExit(f"could not set {missing} in {nb}")
+    doc = json.loads(text)
+    applied = {k: False for k in subs}
+    for cell in doc["cells"]:
+        for i, line in enumerate(cell.get("source", [])):
+            for key, val in subs.items():
+                if applied[key] or not line.startswith(f"{key} = "):
+                    continue
+                end = "\n" if line.endswith("\n") else ""
+                cell["source"][i] = f"{key} = {val}{end}"
+                applied[key] = True
+    missing = [k for k, ok in applied.items() if not ok]
+    if missing:
+        raise SystemExit(f"could not set {missing} in {nb}")
+    if subs:
         text = json.dumps(doc, indent=1)
         print(f"  config: {subs}")
     (stage_dir / nb).write_text(text, encoding="utf-8")
