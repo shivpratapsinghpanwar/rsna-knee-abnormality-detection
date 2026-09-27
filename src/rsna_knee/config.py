@@ -138,3 +138,25 @@ SERIES_SLOTS = [
     ("Axial", 1),
 ]
 MAX_SERIES = len(SERIES_SLOTS)
+
+
+# Corpora built before the manifest existed had no laterality normalisation and
+# windowed each slice against its own percentiles. A checkpoint trained on one of
+# those must be served the same way, so the legacy values are the fallback rather
+# than the current behaviour.
+LEGACY_PREP = {"laterality": False, "window": "slice"}
+
+
+def prep_manifest() -> dict:
+    """How the mosaic corpus on disk was built. Legacy defaults if unmarked."""
+    import json
+
+    f = PREP / "manifest.json"
+    if not f.exists():
+        return dict(LEGACY_PREP)
+    try:
+        m = json.loads(f.read_text())
+    except Exception:
+        return dict(LEGACY_PREP)
+    return {"laterality": bool(m.get("laterality", False)),
+            "window": str(m.get("window", "slice"))}

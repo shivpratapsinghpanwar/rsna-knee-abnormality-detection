@@ -24,8 +24,8 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from rsna_knee.config import (
-    CSV, MAX_SERIES, RAW, SERIES_SLOTS, SIZE, SLICES,
+from rsna_knee.config import (  # noqa: E402
+    CSV, LEGACY_PREP, MAX_SERIES, RAW, SERIES_SLOTS, SIZE, SLICES,
 )  # noqa: E402
 from rsna_knee.data import IMAGENET_MEAN, IMAGENET_STD  # noqa: E402
 from rsna_knee.dicom_io import read_series  # noqa: E402
@@ -60,13 +60,16 @@ def study_slices_from_prep(study: str, slots: dict[int, str], size: int
 
 
 def study_slices(split: str, study: str, sel: pd.DataFrame,
-                 size: int, crop: float = 0.0
+                 size: int, crop: float = 0.0, prep: dict | None = None
                  ) -> tuple[np.ndarray, np.ndarray]:
     """Decode one study's DICOM to (M, SLICES, size, size) uint8 plus a mask.
 
     DICOM is read once at the largest resolution any model needs; smaller models
     get a resize of the same pixels rather than a second pass over the files.
     """
+    prep = prep or dict(LEGACY_PREP)
+    per_series = prep.get("window") == "series"
+    do_lat = bool(prep.get("laterality"))
     out = np.zeros((MAX_SERIES, SLICES, size, size), dtype=np.uint8)
     mask = np.zeros(MAX_SERIES, dtype=bool)
     for r in sel[sel.StudyInstanceUID == study].itertuples():
@@ -75,14 +78,16 @@ def study_slices(split: str, study: str, sel: pd.DataFrame,
         if not paths:
             continue
         try:
-            v, spacing, side = read_series(paths)
+            v, spacing, side = read_series(paths, per_series_window=per_series)
             if v.size == 0:
                 continue
-            # Same mirror as the corpus build; skipping it here would feed the
-            # model right knees it never saw in training.
-            plane = (SERIES_SLOTS[r.slot][0]
-                     if r.slot < len(SERIES_SLOTS) else "Sagittal")
-            v = normalise_laterality(v, plane, side)
+            # Same mirror as the corpus build the weights came from; applying it
+            # to weights trained without it would be exactly the skew this
+            # guard exists to prevent.
+            if do_lat:
+                plane = (SERIES_SLOTS[r.slot][0]
+                         if r.slot < len(SERIES_SLOTS) else "Sagittal")
+                v = normalise_laterality(v, plane, side)
             # Crop exactly as the checkpoints were trained; skipping or adding
             # it would be train/serve skew of the kind the mosaic round-trip
             # exists to prevent.
@@ -123,7 +128,8 @@ TTA = {
 }
 
 
-def load_models(paths: list[Path], device) -> list[tuple[KneeStudyModel, int, float]]:
+def load_models(paths: list[Path], device
+                ) -> list[tuple[KneeStudyModel, int, float, dict]]:
     """Load checkpoints with the input size each was trained at.
 
     Checkpoints record their own `size`, so models trained on a 256 corpus and a
@@ -141,9 +147,12 @@ def load_models(paths: list[Path], device) -> list[tuple[KneeStudyModel, int, fl
         # on whole slices; feeding them cropped input would be train/serve skew
         # that reads as a bad model rather than a mismatch.
         crop = float(ck.get("crop_mm", 0.0))
-        models.append((m, size, crop))
+        prep = ck.get("prep") or dict(LEGACY_PREP)
+        models.append((m, size, crop, prep))
         print(f"  loaded {p.name} (fold {ck.get('fold')}, size {size}, "
-              f"crop {crop:g} mm, weak AUC {ck.get('weak_auc')})")
+              f"crop {crop:g} mm, {prep['window']}-window, "
+              f"laterality={int(bool(prep['laterality']))}, "
+              f"weak AUC {ck.get('weak_auc')})")
     return models
 
 
@@ -186,8 +195,8 @@ def main() -> None:
 
     # Decode each study once at the largest size any model wants, then feed every
     # model a resize of those same pixels.
-    read_size = max(size for _, size, _ in models)
-    crops = {c for _, _, c in models}
+    read_size = max(size for _, size, _, _ in models)
+    crops = {c for _, _, c, _ in models}
     if len(crops) > 1:
         raise SystemExit(
             f"checkpoints disagree on crop_mm {sorted(crops)}. They were trained "
@@ -196,6 +205,15 @@ def main() -> None:
         )
     crop = crops.pop()
     print(f"crop: {crop:g} mm" if crop else "crop: none (whole slice)")
+    preps = {(p["laterality"], p["window"]) for _, _, _, p in models}
+    if len(preps) > 1:
+        raise SystemExit(
+            f"checkpoints disagree on preprocessing {sorted(preps)}. They were "
+            "trained on differently built corpora and cannot share one decode; "
+            "submit them separately."
+        )
+    prep = models[0][3]
+    print(f"prep: {prep['window']}-window, laterality={bool(prep['laterality'])}")
     tta = [t.strip() for t in args.tta.split(",") if t.strip()]
     unknown = [t for t in tta if t not in TTA]
     if unknown:
@@ -212,7 +230,7 @@ def main() -> None:
         slots = torch.arange(MAX_SERIES, device=device).expand(len(batch), MAX_SERIES)
         with torch.no_grad(), torch.autocast(device.type, torch.float16, enabled=amp):
             cache: dict[tuple[int, str], torch.Tensor] = {}
-            for k, (m, size, _) in enumerate(models):
+            for k, (m, size, _, _) in enumerate(models):
                 acc = None
                 for name in tta:
                     key = (size, name)
@@ -230,7 +248,8 @@ def main() -> None:
         if args.from_prep:
             batch.append(study_slices_from_prep(study, by_study[study], read_size))
         else:
-            batch.append(study_slices(args.split, study, sel, read_size, crop))
+            batch.append(study_slices(args.split, study, sel, read_size,
+                                      crop, prep))
         if len(batch) == args.batch:
             flush()
         if i % 25 == 0:

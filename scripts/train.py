@@ -32,7 +32,9 @@ from torch.utils.data import DataLoader
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from rsna_knee.config import CROP_MM, CSV, SIZE, WORK  # noqa: E402
+from rsna_knee.config import (  # noqa: E402
+    CROP_MM, CSV, SIZE, WORK, prep_manifest,
+)
 from rsna_knee.data import (  # noqa: E402
     KneeStudyDataset, collate, index_corpus, make_folds, report_groups,
 )
@@ -150,6 +152,11 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     amp = device.type == "cuda"
 
+    # Which corpus this run trains on, so the submission can refuse to serve
+    # these weights pixels preprocessed a different way.
+    prep_info = prep_manifest()
+    print("corpus:", prep_info)
+
     labels = pd.read_csv(WORK / "weak_labels.csv")
     corpus = index_corpus("train")
     if corpus.empty:
@@ -263,7 +270,7 @@ def main() -> None:
                      fold=args.fold, weak_auc=weak_auc, epoch=epoch,
                      size=args.size, crop_mm=CROP_MM,
                  lr=args.lr, backbone_lr_mult=args.backbone_lr_mult,
-                 encoder_chunk=args.encoder_chunk, targets=TARGETS),
+                 encoder_chunk=args.encoder_chunk, prep=prep_info, targets=TARGETS),
                 ckpt,
             )
         # Written every epoch, not just at the end, so a session killed partway

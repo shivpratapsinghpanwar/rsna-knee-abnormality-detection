@@ -14,6 +14,7 @@ second session.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -23,8 +24,8 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from rsna_knee.config import (
-    CSV, MOSAIC_EXT, PREP, RAW, SERIES_SLOTS, SIZE,
+from rsna_knee.config import (  # noqa: E402
+    CROP_MM, CSV, MOSAIC_EXT, PREP, RAW, SERIES_SLOTS, SIZE, SLICES,
 )  # noqa: E402
 from rsna_knee.dicom_io import read_series  # noqa: E402
 from rsna_knee.preprocess import (  # noqa: E402

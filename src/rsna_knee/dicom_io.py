@@ -144,7 +144,8 @@ def window_uint8(arr: np.ndarray) -> np.ndarray:
     return (out * 255.0).astype(np.uint8)
 
 
-def read_series(paths: list[Path]) -> tuple[np.ndarray, float, str]:
+def read_series(paths: list[Path], per_series_window: bool = True
+                ) -> tuple[np.ndarray, float, str]:
     """Read a series into a (N, H, W) uint8 volume, its mm-per-pixel, and side.
 
     Slices whose in-plane size differs from the majority are dropped: a handful of
@@ -181,6 +182,10 @@ def read_series(paths: list[Path]) -> tuple[np.ndarray, float, str]:
             votes[lat] = votes.get(lat, 0) + 1
     side = max(votes, key=lambda k: votes[k]) if votes else ""
 
-    # One window over the stacked series, not one per slice.
-    return (window_series_uint8(np.stack([a for _, a, _, _ in read])),
-            spacing, side)
+    stack = np.stack([a for _, a, _, _ in read])
+    # One window over the stacked series, not one per slice. The per-slice path
+    # is kept reachable because checkpoints trained on a per-slice corpus must be
+    # served the pixels they were trained on.
+    vol = (window_series_uint8(stack) if per_series_window
+           else np.stack([window_uint8(a) for a in stack]))
+    return vol, spacing, side
