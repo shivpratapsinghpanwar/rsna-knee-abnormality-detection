@@ -107,7 +107,13 @@ def metadata(user: str, slug: str, title: str, nb: str, gpu: bool, net: bool,
 def status(api, ref: str) -> tuple[str, str]:
     try:
         r = api.kernels_status(ref)
-        return str(getattr(r, "status", "?")), str(getattr(r, "failure_message", "") or "")
+        # str() on the enum gives "KernelWorkerStatus.COMPLETE"; callers compare
+        # against bare names, so keep only the last segment. Returning the
+        # prefixed form made the poll loop below never recognise completion and
+        # spin for 9.5 hours without ever entering the submission -- which cost
+        # two submissions before it was spotted.
+        raw = str(getattr(r, "status", "?"))
+        return raw.rsplit(".", 1)[-1], str(getattr(r, "failure_message", "") or "")
     except Exception as exc:
         return f"error:{type(exc).__name__}", str(exc)[:200]
 
