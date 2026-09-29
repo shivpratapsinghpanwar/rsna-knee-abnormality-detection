@@ -139,7 +139,12 @@ def load_models(paths: list[Path], device
     models = []
     for p in paths:
         ck = torch.load(p, map_location="cpu", weights_only=False)
-        m = KneeStudyModel(ck.get("backbone", "resnet34"), pretrained=False)
+        # Carry the training-time chunk through to inference. It changes no
+        # arithmetic -- the outputs are bit-identical -- but it caps the
+        # transient activation peak, and a 73M CoAtNet fed 64 images in one
+        # call needs 15 GB it will not get on a T4.
+        m = KneeStudyModel(ck.get("backbone", "resnet34"), pretrained=False,
+                           chunk=int(ck.get("encoder_chunk", 0) or 0))
         m.load_state_dict(ck["model"])
         m.to(device).eval()
         size = int(ck.get("size", 256))  # corpora before `size` existed were 256
@@ -150,7 +155,8 @@ def load_models(paths: list[Path], device
         prep = ck.get("prep") or dict(LEGACY_PREP)
         models.append((m, size, crop, prep))
         print(f"  loaded {p.name} (fold {ck.get('fold')}, size {size}, "
-              f"crop {crop:g} mm, {prep['window']}-window, "
+              f"crop {crop:g} mm, chunk {int(ck.get('encoder_chunk', 0) or 0)}, "
+              f"{prep['window']}-window, "
               f"laterality={int(bool(prep['laterality']))}, "
               f"weak AUC {ck.get('weak_auc')})")
     return models
