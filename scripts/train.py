@@ -33,7 +33,7 @@ from torch.utils.data import DataLoader
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rsna_knee.config import (  # noqa: E402
-    CROP_MM, CSV, SIZE, WORK, prep_manifest,
+    CROP_MM, CSV, MAX_SERIES, ROI_SLOTS, SIZE, WORK, prep_manifest,
 )
 from rsna_knee.data import (  # noqa: E402
     KneeStudyDataset, collate, index_corpus, make_folds, report_groups,
@@ -137,6 +137,9 @@ def main() -> None:
     # best checkpoint so far is already written and the run is still useful.
     ap.add_argument("--max-minutes", type=float, default=0,
                     help="stop after the epoch that crosses this (0 = no limit)")
+    ap.add_argument("--roi", action="store_true",
+                    help="compartment ROI: split coronal and axial into two "
+                         "overlapping half-width views (4 slots -> 6)")
     ap.add_argument("--encoder-chunk", type=int, default=0,
                     help="images per backbone call (0 = the whole study at "
                          "once). Caps activation peak so heavy backbones fit")
@@ -181,8 +184,10 @@ def main() -> None:
     va_df = labels[fold == args.fold].reset_index(drop=True)
     print(f"fold {args.fold}/{n_folds}: train {len(tr_df)}  val {len(va_df)}")
 
-    tr_ds = KneeStudyDataset(tr_df, corpus, train=True, size=args.size)
-    va_ds = KneeStudyDataset(va_df, corpus, train=False, size=args.size)
+    tr_ds = KneeStudyDataset(tr_df, corpus, train=True, size=args.size,
+                             roi=args.roi)
+    va_ds = KneeStudyDataset(va_df, corpus, train=False, size=args.size,
+                             roi=args.roi)
     tr_ld = DataLoader(tr_ds, batch_size=args.batch, shuffle=True,
                        num_workers=args.workers, collate_fn=collate,
                        pin_memory=amp, drop_last=len(tr_ds) > args.batch)
@@ -191,7 +196,9 @@ def main() -> None:
 
     model = KneeStudyModel(args.backbone, pretrained=True,
                            grad_checkpointing=args.grad_checkpointing,
-                           chunk=args.encoder_chunk).to(device)
+                           chunk=args.encoder_chunk,
+                           n_slots=ROI_SLOTS if args.roi else MAX_SERIES
+                           ).to(device)
     groups = param_groups(model, args.lr, args.backbone_lr_mult)
     opt = torch.optim.AdamW(groups)
     print("param groups:", {g["name"]: f"{len(g['params'])}t lr={g['lr']:.2g} "
@@ -270,7 +277,8 @@ def main() -> None:
                      fold=args.fold, weak_auc=weak_auc, epoch=epoch,
                      size=args.size, crop_mm=CROP_MM,
                  lr=args.lr, backbone_lr_mult=args.backbone_lr_mult,
-                 encoder_chunk=args.encoder_chunk, prep=prep_info, targets=TARGETS),
+                 encoder_chunk=args.encoder_chunk, roi=args.roi,
+                 prep=prep_info, targets=TARGETS),
                 ckpt,
             )
         # Written every epoch, not just at the end, so a session killed partway

@@ -12,7 +12,10 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from .config import MAX_SERIES, PREP, SIZE, SLICES
+from .config import (
+    MAX_SERIES, PREP, ROI_HALF_FRAC, ROI_SLOTS, ROI_SPLIT_SLOTS, SIZE,
+    SLICES,
+)
 from .labels import TARGETS
 from .preprocess import mosaic_to_volume
 
@@ -131,10 +134,13 @@ class KneeStudyDataset(Dataset):
     """
 
     def __init__(self, labels: pd.DataFrame, corpus: pd.DataFrame,
-                 train: bool = True, size: int = SIZE):
+                 train: bool = True, size: int = SIZE, roi: bool = False):
         self.labels = labels.reset_index(drop=True)
         self.train = train
         self.size = size
+        # Compartment ROI: coronal and axial slots each become two overlapping
+        # half-width views, so the study carries ROI_SLOTS instead of MAX_SERIES.
+        self.roi = bool(roi)
         self.target_cols = [f"weak_{t}" for t in TARGETS]
         by_study: dict[str, dict[int, str]] = {}
         for r in corpus.itertuples():
@@ -177,29 +183,59 @@ class KneeStudyDataset(Dataset):
             vol = np.roll(vol, shift, axis=0)
         return vol
 
+    def _halves(self, v: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Split a slot into two overlapping half-width views, each rescaled.
+
+        A 3 mm tear is about eight pixels of a 384 px frame at our 0.365 mm/px,
+        so the finding the metric turns on occupies ~0.04% of what the backbone
+        sees. Cropping a compartment and rescaling it does not add information --
+        the pixels are interpolated -- but it does put the anatomy at twice the
+        scale, and lets the per-target attention specialise one view per side
+        instead of hunting the whole joint for every finding.
+        """
+        from .preprocess import resize
+
+        w = v.shape[-1]
+        cut = int(round(w * ROI_HALF_FRAC))
+        left, right = v[..., :cut], v[..., w - cut:]
+        out = []
+        for half in (left, right):
+            out.append(np.stack([resize(sl, self.size) for sl in half]))
+        return out[0], out[1]
+
     def __getitem__(self, i: int):
         row = self.labels.iloc[i]
         study = row.StudyInstanceUID
         slots = self.by_study.get(study, {})
 
-        vol = np.zeros((MAX_SERIES, SLICES, self.size, self.size), dtype=np.float32)
-        mask = np.zeros(MAX_SERIES, dtype=bool)
+        n = ROI_SLOTS if self.roi else MAX_SERIES
+        vol = np.zeros((n, SLICES, self.size, self.size), dtype=np.float32)
+        mask = np.zeros(n, dtype=bool)
+        cursor = MAX_SERIES          # extra slots are appended after the originals
         for slot in range(MAX_SERIES):
             path = slots.get(slot)
             if path is None:
+                if self.roi and slot in ROI_SPLIT_SLOTS:
+                    cursor += 1      # keep the layout fixed whether or not present
                 continue
             v = self._load_slot(path)
             if self.train:
                 v = self._augment(v)
-            vol[slot] = v
-            mask[slot] = True
+            if self.roi and slot in ROI_SPLIT_SLOTS:
+                a, b = self._halves(v)
+                vol[slot], mask[slot] = a, True
+                vol[cursor], mask[cursor] = b, True
+                cursor += 1
+            else:
+                vol[slot] = v
+                mask[slot] = True
 
         vol = (vol - IMAGENET_MEAN) / IMAGENET_STD
         target = row[self.target_cols].to_numpy(dtype=np.float32)
         return (
             torch.from_numpy(vol),
             torch.from_numpy(mask),
-            torch.arange(MAX_SERIES),
+            torch.arange(n),
             torch.from_numpy(target),
         )
 

@@ -123,7 +123,8 @@ class KneeStudyModel(nn.Module):
 
     def __init__(self, backbone: str = "resnet34", pretrained: bool = True,
                  n_targets: int = N_TARGETS, drop: float = 0.1,
-                 grad_checkpointing: bool = False, chunk: int = 0):
+                 grad_checkpointing: bool = False, chunk: int = 0,
+                 n_slots: int = MAX_SERIES):
         super().__init__()
         self.encoder = SeriesEncoder(backbone, pretrained, drop=drop,
                                      grad_checkpointing=grad_checkpointing,
@@ -134,7 +135,10 @@ class KneeStudyModel(nn.Module):
         # A series carries its own identity (which plane, fluid-sensitive or not);
         # the study-level gate should be able to prefer, say, sagittal PD when
         # ranking meniscal tears.
-        self.slot_embed = nn.Embedding(MAX_SERIES, dim)
+        # One embedding per slot. With compartment ROI there are more slots
+        # than series, and each half gets its own identity so the per-target
+        # gate can prefer, say, the lateral view when ranking Lateral OA.
+        self.slot_embed = nn.Embedding(n_slots, dim)
         self.series_pool = TargetAttentionPool(dim, n_targets)
 
         self.norm = nn.LayerNorm(dim)

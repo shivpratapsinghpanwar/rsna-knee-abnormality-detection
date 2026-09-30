@@ -139,6 +139,22 @@ SERIES_SLOTS = [
 ]
 MAX_SERIES = len(SERIES_SLOTS)
 
+# Compartment ROI. Coronal and axial slices carry medial-lateral *within* the
+# slice, so each can be split into two half-width views. After laterality
+# normalisation a given half is the same anatomy in every study, which is the
+# whole reason this is possible -- without the mirroring, half A would be medial
+# in one study and lateral in the next.
+#
+# The halves overlap (each is 60% of the width) so the intercondylar region,
+# where both menisci and the cruciates sit, appears in both rather than being
+# cut down the middle.
+#
+# Sagittal slices carry no medial-lateral in plane -- it runs through the stack --
+# so they are left whole.
+ROI_SPLIT_SLOTS = (2, 3)          # Coronal, Axial
+ROI_HALF_FRAC = 0.60
+ROI_SLOTS = MAX_SERIES + len(ROI_SPLIT_SLOTS)   # 4 -> 6
+
 
 # Corpora built before the manifest existed had no laterality normalisation and
 # windowed each slice against its own percentiles. A checkpoint trained on one of
