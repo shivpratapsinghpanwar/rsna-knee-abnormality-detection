@@ -137,6 +137,10 @@ def main() -> None:
     # best checkpoint so far is already written and the run is still useful.
     ap.add_argument("--max-minutes", type=float, default=0,
                     help="stop after the epoch that crosses this (0 = no limit)")
+    ap.add_argument("--max-vram-frac", type=float, default=0.0,
+                    help="hard cap on this process's share of VRAM (0 = no cap). "
+                         "Set it to leave room for another job on the same card: "
+                         "the cap makes us OOM instead of starving the neighbour")
     ap.add_argument("--roi", action="store_true",
                     help="compartment ROI: split coronal and axial into two "
                          "overlapping half-width views (4 slots -> 6)")
@@ -153,6 +157,14 @@ def main() -> None:
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.max_vram_frac and device.type == "cuda":
+        # A hard ceiling, not a hint. Another job shares this card, and the
+        # caching allocator will otherwise grow to fill whatever is free and not
+        # give it back -- starving the neighbour rather than failing ourselves.
+        torch.cuda.set_per_process_memory_fraction(args.max_vram_frac)
+        total = torch.cuda.get_device_properties(0).total_memory / 1e9
+        print(f"vram cap: {args.max_vram_frac:.0%} of {total:.1f} GB = "
+              f"{args.max_vram_frac * total:.1f} GB", flush=True)
     amp = device.type == "cuda"
 
     # Which corpus this run trains on, so the submission can refuse to serve
