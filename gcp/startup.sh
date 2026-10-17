@@ -8,7 +8,9 @@
 #
 # Settings arrive as instance metadata, written by gcp/knee_gcp.py launch.
 set -u
-exec >> /var/log/knee-startup.log 2>&1
+# tee rather than redirect: the metadata runner forwards stdout to the serial
+# console, which the workstation can read with get-serial-port-output.
+exec > >(tee -a /var/log/knee-startup.log) 2>&1
 echo "=== boot $(date -u +%FT%TZ)"
 
 md() { curl -sf -H Metadata-Flavor:Google \
