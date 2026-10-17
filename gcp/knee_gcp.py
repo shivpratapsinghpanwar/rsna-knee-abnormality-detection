@@ -52,7 +52,17 @@ SA_KEY = Path(os.environ.get("KNEE_SA_KEY", r"D:\kaggle_c\gcloud\sa.json"))
 
 
 def sa_email() -> str:
-    return json.loads(SA_KEY.read_text())["client_email"]
+    """The account the VMs run as: the key's, else knee-runner if it exists.
+
+    Many accounts forbid key creation by policy, so the CLI may be logged in as
+    the user instead; the VMs then still run as the narrow account if it exists.
+    """
+    if SA_KEY.exists():
+        return json.loads(SA_KEY.read_text())["client_email"]
+    name = f"knee-runner@{project()}.iam.gserviceaccount.com"
+    if gc("iam", "service-accounts", "describe", name, check=False, quiet=True):
+        return name
+    return ""
 
 
 def login(_args) -> None:
@@ -146,15 +156,17 @@ def startup_file() -> Path:
 
 def create(fold, img=None) -> str | None:
     img_project, family = img or image()
+    sa = sa_email()
     meta = f"fold={fold},bucket={bucket()},epochs={EPOCHS},install-nvidia-driver=True"
     for zone in ZONES:
         args = ["compute", "instances", "create", vm(fold), f"--zone={zone}",
                 f"--machine-type={MACHINE}", "--maintenance-policy=TERMINATE",
                 f"--image-project={img_project}", f"--image-family={family}",
                 "--boot-disk-size=150GB", "--boot-disk-type=pd-balanced",
-                f"--service-account={sa_email()}",
                 "--scopes=cloud-platform", f"--metadata={meta}",
                 f"--metadata-from-file=startup-script={startup_file()}"]
+        if sa:
+            args.append(f"--service-account={sa}")
         if SPOT:
             args += ["--provisioning-model=SPOT", "--instance-termination-action=STOP"]
         try:
