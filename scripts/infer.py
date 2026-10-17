@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -128,9 +130,12 @@ TTA = {
 }
 
 
-def load_models(paths: list[Path], device
+def load_models(paths: list[Path], devices: list[torch.device]
                 ) -> list[tuple[KneeStudyModel, int, float, dict]]:
     """Load checkpoints with the input size each was trained at.
+
+    Checkpoint k goes to devices[k % len(devices)], so on a two-GPU notebook the
+    folds split across both cards and run side by side.
 
     Checkpoints record their own `size`, so models trained on a 256 corpus and a
     384 corpus can be blended in one submission -- which is worth doing, since
@@ -146,7 +151,7 @@ def load_models(paths: list[Path], device
         m = KneeStudyModel(ck.get("backbone", "resnet34"), pretrained=False,
                            chunk=int(ck.get("encoder_chunk", 0) or 0))
         m.load_state_dict(ck["model"])
-        m.to(device).eval()
+        m.to(devices[len(models) % len(devices)]).eval()
         size = int(ck.get("size", 256))  # corpora before `size` existed were 256
         # Checkpoints from before mm-cropping carry no crop_mm and were trained
         # on whole slices; feeding them cropped input would be train/serve skew
@@ -172,11 +177,25 @@ def main() -> None:
                     help="read preprocessed mosaics instead of raw DICOM")
     ap.add_argument("--tta", default="none",
                     help="comma-separated TTA transforms: " + ",".join(TTA))
+    # The scoring notebook leaves this arm whatever time the public stack did
+    # not use, and the hidden test size is unknown. Rather than guess how many
+    # folds fit, measure as we go and drop folds that would not finish.
+    ap.add_argument("--deadline", type=float, default=0,
+                    help="unix time by which the CSV must be written (0 = none). "
+                         "Folds are dropped, last first, when the projected finish "
+                         "passes it; the first checkpoint is always kept")
+    ap.add_argument("--margin", type=float, default=300,
+                    help="seconds of slack kept before --deadline")
+    ap.add_argument("--limit", type=int, default=0, help="debug: first N studies")
     args = ap.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    amp = device.type == "cuda"
-    models = load_models([Path(p) for p in args.ckpt], device)
+    n_gpu = torch.cuda.device_count()
+    devices = ([torch.device(f"cuda:{i}") for i in range(n_gpu)] if n_gpu
+               else [torch.device("cpu")])
+    amp = devices[0].type == "cuda"
+    print(f"devices: {[str(d) for d in devices]}")
+    models = load_models([Path(p) for p in args.ckpt], devices)
+    dev_of = [next(m.parameters()).device for m, _, _, _ in models]
     if not models:
         raise SystemExit("no checkpoints loaded")
 
@@ -198,6 +217,9 @@ def main() -> None:
         sel = select_series(meta)
         by_study = {}
         print(f"{len(ids)} studies, {len(sel)} series selected")
+
+    if args.limit:
+        ids = ids[:args.limit]
 
     # Decode each study once at the largest size any model wants, then feed every
     # model a resize of those same pixels.
@@ -226,17 +248,22 @@ def main() -> None:
         raise SystemExit(f"unknown TTA {unknown}; choose from {sorted(TTA)}")
     print(f"TTA: {tta}")
     per_model = [[] for _ in models]
+    active = list(range(len(models)))  # fold order is priority order
     batch: list[tuple[np.ndarray, np.ndarray]] = []
+    # Seconds spent per study: decoding, and each model's GPU work (TTA included).
+    spent = {"decode": 0.0, **{k: 0.0 for k in active}}
+    done = 0
 
-    def flush() -> None:
-        if not batch:
-            return
-        raw = np.stack([b[0] for b in batch])
-        msk = torch.from_numpy(np.stack([b[1] for b in batch])).to(device)
-        slots = torch.arange(MAX_SERIES, device=device).expand(len(batch), MAX_SERIES)
-        with torch.no_grad(), torch.autocast(device.type, torch.float16, enabled=amp):
+    def run_device(dev: torch.device, ks: list[int], raw: np.ndarray,
+                   msk_np: np.ndarray) -> None:
+        # autocast and no_grad are thread-local, so each device thread sets its own.
+        msk = torch.from_numpy(msk_np).to(dev)
+        slots = torch.arange(MAX_SERIES, device=dev).expand(len(raw), MAX_SERIES)
+        with torch.no_grad(), torch.autocast(dev.type, torch.float16, enabled=amp):
             cache: dict[tuple[int, str], torch.Tensor] = {}
-            for k, (m, size, _, _) in enumerate(models):
+            for k in ks:
+                m, size, _, _ = models[k]
+                t = time.time()
                 acc = None
                 for name in tta:
                     key = (size, name)
@@ -244,25 +271,69 @@ def main() -> None:
                         aug = TTA[name](raw)
                         cache[key] = torch.from_numpy(
                             np.stack([to_model_input(v, size) for v in aug])
-                        ).to(device)
+                        ).to(dev)
                     out = torch.sigmoid(m(cache[key], msk, slots).float())
                     acc = out if acc is None else acc + out
                 per_model[k].append((acc / len(tta)).cpu().numpy())
+                spent[k] += time.time() - t  # .cpu() above synchronises
+
+    def flush() -> None:
+        if not batch:
+            return
+        raw = np.stack([b[0] for b in batch])
+        msk_np = np.stack([b[1] for b in batch])
+        groups: dict[torch.device, list[int]] = {}
+        for k in active:
+            groups.setdefault(dev_of[k], []).append(k)
+        with ThreadPoolExecutor(len(groups)) as ex:
+            for f in [ex.submit(run_device, d, ks, raw, msk_np)
+                      for d, ks in groups.items()]:
+                f.result()
         batch.clear()
 
+    def shed() -> None:
+        """Drop the last active fold while the projected finish misses the deadline.
+
+        A dropped fold is dropped for every study, so the folds that remain still
+        cover the whole test set and rank-average consistently.
+        """
+        if not args.deadline or done < 4 * args.batch:
+            return
+        while len(active) > 1:
+            # Devices run in parallel, so the slowest card sets the pace.
+            busiest = max(sum(spent[k] for k in active if dev_of[k] == d)
+                          for d in {dev_of[k] for k in active})
+            per_study = (spent["decode"] + busiest) / done
+            finish = time.time() + per_study * (len(ids) - done)
+            if finish < args.deadline - args.margin:
+                return
+            k = active.pop()
+            per_model[k] = []
+            print(f"  deadline: dropping checkpoint {k} at {done}/{len(ids)} "
+                  f"(projected {per_study:.1f}s/study)", flush=True)
+
     for i, study in enumerate(ids, 1):
+        t = time.time()
         if args.from_prep:
             batch.append(study_slices_from_prep(study, by_study[study], read_size))
         else:
             batch.append(study_slices(args.split, study, sel, read_size,
                                       crop, prep))
+        spent["decode"] += time.time() - t
         if len(batch) == args.batch:
             flush()
+            done = i
+            shed()
         if i % 25 == 0:
             print(f"  {i}/{len(ids)}", flush=True)
     flush()
+    done = len(ids)
 
-    preds = [np.concatenate(p) for p in per_model]
+    print(f"kept {len(active)} of {len(models)} checkpoints: {active}; "
+          f"decode {spent['decode'] / max(done, 1):.2f}s/study, gpu "
+          + ", ".join(f"{spent[k] / max(done, 1):.2f}" for k in active)
+          + " s/study per checkpoint", flush=True)
+    preds = [np.concatenate(per_model[k]) for k in active]
     if len(preds) == 1:
         blend = preds[0]
     else:
