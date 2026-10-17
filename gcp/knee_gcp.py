@@ -242,7 +242,10 @@ def watch(args) -> None:
     pending, img, stuck = set(args.folds), None, {}
     while pending:
         inst = instances()
-        for f in sorted(pending):
+        # With a one-GPU quota, folds go strictly in order: otherwise a stopped
+        # VM frees the slot and a later fold grabs it before the restart can.
+        active = sorted(pending) if args.parallel else sorted(pending)[:1]
+        for f in active:
             name = vm(f)
             if marker(f, "DONE"):
                 pull(f)
@@ -299,6 +302,8 @@ def main() -> None:
     for name, fn in (("launch", launch), ("watch", watch)):
         p = sub.add_parser(name)
         p.add_argument("folds", nargs="+", type=int)
+        p.add_argument("--parallel", action="store_true",
+                       help="run every fold at once (needs a GPU quota above 1)")
         p.set_defaults(fn=fn)
     sub.add_parser("status").set_defaults(fn=status)
     sub.add_parser("down").set_defaults(fn=down)

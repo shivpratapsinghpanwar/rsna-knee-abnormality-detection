@@ -37,8 +37,15 @@ if [ ! -f .setup_done ]; then
   gcloud storage cp "gs://$BUCKET/stage/weak_labels.csv" work/
   # Streamed straight into tar: the archive never lands on disk twice.
   gcloud storage cat "gs://$BUCKET/stage/prep.tar" | tar -xf - -C $ROOT
-  gcloud storage cp "gs://$BUCKET/stage/manifest.json" prep/
-  ls prep/train | wc -l
+  gcloud storage cp "gs://$BUCKET/stage/manifest.json" prep/manifest.json
+  # Without the data nothing below is worth doing. Stay up, unmarked, so the
+  # serial log can be read and the next boot retries the download.
+  n=$(ls prep/train 2>/dev/null | wc -l)
+  echo "corpus studies: $n"
+  if [ "$n" -lt 4400 ] || [ ! -s work/weak_labels.csv ] || [ ! -s data/train.csv ] ||
+     [ ! -s prep/manifest.json ] || [ ! -d code/src ]; then
+    echo "setup failed: data incomplete"; exit 1
+  fi
 
   # uv brings its own Python, so this does not depend on what the image ships.
   curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
