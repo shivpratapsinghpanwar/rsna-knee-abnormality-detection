@@ -36,15 +36,24 @@ GCLOUD = [str(SDK / "platform" / "bundledpython" / "python.exe"),
 KAGGLE = Path(r"D:\kaggle_c")
 PULL = KAGGLE / "work" / "coat_gcp"
 
-MACHINE = os.environ.get("KNEE_MACHINE", "g2-standard-8")  # 1x L4 24 GB
 EPOCHS = os.environ.get("KNEE_EPOCHS", "8")
 SPOT = os.environ.get("KNEE_SPOT", "1") == "1"
-# L4 capacity in the US, roughly most-to-least available. Asia-southeast was
-# always full when tried, so it is left out.
-ZONES = os.environ.get("KNEE_ZONES", ",".join([
-    "us-central1-a", "us-central1-b", "us-central1-c", "us-east4-a",
-    "us-east4-c", "us-east1-b", "us-east1-c", "us-east1-d", "us-west1-a",
-    "us-west1-b", "us-west4-a", "us-west4-c"])).split(",")
+# Card -> (machine type, extra accelerator flag, US zones that stock it,
+# roughly most-to-least available). Asia-southeast was always full when tried.
+GPUS = {
+    "l4": ("g2-standard-8", None,
+           ["us-central1-a", "us-central1-b", "us-central1-c", "us-east4-a",
+            "us-east4-c", "us-east1-b", "us-east1-c", "us-east1-d",
+            "us-west1-a", "us-west1-b", "us-west4-a", "us-west4-c"]),
+    "a100": ("a2-highgpu-1g", None,
+             ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f"]),
+    "v100": ("n1-standard-8", "type=nvidia-tesla-v100,count=1",
+             ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f",
+              "us-east1-c", "us-west1-a", "us-west1-b"]),
+}
+GPU = os.environ.get("KNEE_GPU", "l4")
+MACHINE, ACCEL, _zones = GPUS[GPU]
+ZONES = os.environ.get("KNEE_ZONES", ",".join(_zones)).split(",")
 BUCKET_REGION = "us-central1"
 # Service-account key: scoped to one project, nothing else on the Google
 # account. The VMs run as the same account, so they need no other grants.
@@ -167,6 +176,8 @@ def create(fold, img=None) -> str | None:
                 f"--metadata-from-file=startup-script={startup_file()}"]
         if sa:
             args.append(f"--service-account={sa}")
+        if ACCEL:
+            args.append(f"--accelerator={ACCEL}")
         if SPOT:
             args += ["--provisioning-model=SPOT", "--instance-termination-action=STOP"]
         try:
