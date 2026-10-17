@@ -1,5 +1,6 @@
 """Train CoAtNet folds on Google Cloud spot L4s, driven from the workstation.
 
+    python gcp/knee_gcp.py login            # activate D:\\kaggle_c\\gcloud\\sa.json
     python gcp/knee_gcp.py stage            # bucket + code, labels, corpus (once)
     python gcp/knee_gcp.py launch 2 3 4     # one spot VM per fold
     python gcp/knee_gcp.py watch 2 3 4      # restart after preemption, pull results
@@ -45,6 +46,20 @@ ZONES = os.environ.get("KNEE_ZONES", ",".join([
     "us-east4-c", "us-east1-b", "us-east1-c", "us-east1-d", "us-west1-a",
     "us-west1-b", "us-west4-a", "us-west4-c"])).split(",")
 BUCKET_REGION = "us-central1"
+# Service-account key: scoped to one project, nothing else on the Google
+# account. The VMs run as the same account, so they need no other grants.
+SA_KEY = Path(os.environ.get("KNEE_SA_KEY", r"D:\kaggle_c\gcloud\sa.json"))
+
+
+def sa_email() -> str:
+    return json.loads(SA_KEY.read_text())["client_email"]
+
+
+def login(_args) -> None:
+    key = json.loads(SA_KEY.read_text())
+    gc("auth", "activate-service-account", f"--key-file={SA_KEY}")
+    gc("config", "set", "project", key["project_id"])
+    print("active:", key["client_email"], "project:", key["project_id"])
 
 
 def gc(*args, check=True, quiet=False) -> str:
@@ -137,6 +152,7 @@ def create(fold, img=None) -> str | None:
                 f"--machine-type={MACHINE}", "--maintenance-policy=TERMINATE",
                 f"--image-project={img_project}", f"--image-family={family}",
                 "--boot-disk-size=150GB", "--boot-disk-type=pd-balanced",
+                f"--service-account={sa_email()}",
                 "--scopes=cloud-platform", f"--metadata={meta}",
                 f"--metadata-from-file=startup-script={startup_file()}"]
         if SPOT:
@@ -255,6 +271,7 @@ def down(_args) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("login").set_defaults(fn=login)
     sub.add_parser("stage").set_defaults(fn=stage)
     for name, fn in (("launch", launch), ("watch", watch)):
         p = sub.add_parser(name)
