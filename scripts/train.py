@@ -152,6 +152,10 @@ def main() -> None:
     ap.add_argument("--pos-weight-cap", type=float, default=0,
                     help="inverse-prevalence positive weighting, capped here "
                          "(0 disables). Aimed at the rare targets under macro AUC")
+    # A spot VM can be reclaimed at any moment. The full training state is
+    # written after every epoch, so a restarted run loses at most one epoch.
+    ap.add_argument("--resume", action="store_true",
+                    help="continue from fold<N>_last.pt in --out if present")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -234,11 +238,22 @@ def main() -> None:
     out_dir = Path(args.out) if args.out else WORK / "models"
     out_dir.mkdir(parents=True, exist_ok=True)
     ckpt = out_dir / f"fold{args.fold}_{args.backbone}.pt"
-    history, best = [], -1.0
+    last = out_dir / f"fold{args.fold}_last.pt"
+    history, best, start_epoch, per = [], -1.0, 0, {}
+    if args.resume and last.exists():
+        state = torch.load(last, map_location=device, weights_only=False)
+        model.load_state_dict(state["model"])
+        opt.load_state_dict(state["opt"])
+        sched.load_state_dict(state["sched"])
+        scaler.load_state_dict(state["scaler"])
+        history, best = state["history"], state["best"]
+        start_epoch = state["epoch"] + 1
+        print(f"resumed from {last.name}: epoch {state['epoch']} done, "
+              f"best weak AUC {best:.4f}", flush=True)
     budget = args.max_minutes * 60 if args.max_minutes else float("inf")
     started = time.time()
 
-    for epoch in range(args.epochs):
+    for epoch in range(start_epoch, args.epochs):
         model.train()
         t0, total, nb = time.time(), 0.0, 0
         opt.zero_grad(set_to_none=True)
@@ -298,6 +313,14 @@ def main() -> None:
         (out_dir / f"fold{args.fold}_history.json").write_text(
             json.dumps(history, indent=2)
         )
+        if args.resume:
+            # Write-then-rename: a preemption mid-save must not leave a torn file
+            # that the next boot would fail to load.
+            tmp = last.with_suffix(".tmp")
+            torch.save(dict(model=model.state_dict(), opt=opt.state_dict(),
+                            sched=sched.state_dict(), scaler=scaler.state_dict(),
+                            epoch=epoch, best=best, history=history), tmp)
+            tmp.replace(last)
 
         if time.time() - started > budget:
             print(f"\nreached the {args.max_minutes:g} min budget after epoch "
