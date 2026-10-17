@@ -67,7 +67,9 @@ gcloud storage cp "$OUT/fold${FOLD}_*" work/coat/ 2>/dev/null || true
 # checkpointing on top of that recomputes twice; dropping it saves ~20% when the
 # card has room (A100 40 GB). An OOM steps one rung down and resumes. The rung
 # is kept on disk so a reboot does not climb back to one that failed.
-LADDER=("2 8 32 0" "2 8 32 1" "1 16 16 1")
+LADDER=("2 8 64 0" "2 8 32 0" "2 8 32 1" "1 16 16 1")
+# Leave two cores for the system; the rest decode JPEG mosaics.
+WORKERS=$(( $(nproc) - 2 ))
 [ -f rung ] || echo 0 > rung
 
 sync_out() {
@@ -84,7 +86,7 @@ while true; do
   GCFLAG=""; [ "$GC" = 1 ] && GCFLAG="--grad-checkpointing"
   echo "run: batch $B accum $A chunk $C gradckpt $GC"
   /opt/kv/bin/python -u scripts/train.py --fold "$FOLD" --folds 5 \
-    --epochs "$EPOCHS" --batch "$B" --accum "$A" --workers 7 \
+    --epochs "$EPOCHS" --batch "$B" --accum "$A" --workers "$WORKERS" \
     --backbone coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k --size 384 \
     --lr 1e-3 --backbone-lr-mult 0.03 $GCFLAG \
     --encoder-chunk "$C" --resume --out $ROOT/work/coat 2>&1 |

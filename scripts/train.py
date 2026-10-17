@@ -161,6 +161,12 @@ def main() -> None:
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        # Every study is the same tensor shape, so cuDNN can benchmark once and
+        # keep the fastest kernels. TF32 covers whatever autocast leaves in fp32.
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     if args.max_vram_frac and device.type == "cuda":
         # A hard ceiling, not a hint. Another job shares this card, and the
         # caching allocator will otherwise grow to fill whatever is free and not
