@@ -51,9 +51,9 @@ GPUS = {
              ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f",
               "us-east1-c", "us-west1-a", "us-west1-b"]),
 }
-GPU = os.environ.get("KNEE_GPU", "l4")
-MACHINE, ACCEL, _zones = GPUS[GPU]
-ZONES = os.environ.get("KNEE_ZONES", ",".join(_zones)).split(",")
+# Cards to try, in order of preference, e.g. KNEE_GPU=a100,l4: the first one
+# with capacity in any of its zones wins.
+CARDS = os.environ.get("KNEE_GPU", "l4").split(",")
 BUCKET_REGION = "us-central1"
 # Service-account key: scoped to one project, nothing else on the Google
 # account. The VMs run as the same account, so they need no other grants.
@@ -167,30 +167,32 @@ def create(fold, img=None) -> str | None:
     img_project, family = img or image()
     sa = sa_email()
     meta = f"fold={fold},bucket={bucket()},epochs={EPOCHS},install-nvidia-driver=True"
-    for zone in ZONES:
-        args = ["compute", "instances", "create", vm(fold), f"--zone={zone}",
-                f"--machine-type={MACHINE}", "--maintenance-policy=TERMINATE",
-                f"--image-project={img_project}", f"--image-family={family}",
-                "--boot-disk-size=150GB", "--boot-disk-type=pd-balanced",
-                "--scopes=cloud-platform", f"--metadata={meta}",
-                f"--metadata-from-file=startup-script={startup_file()}"]
-        if sa:
-            args.append(f"--service-account={sa}")
-        if ACCEL:
-            args.append(f"--accelerator={ACCEL}")
-        if SPOT:
-            args += ["--provisioning-model=SPOT", "--instance-termination-action=STOP"]
-        try:
-            gc(*args)
-            print(f"{vm(fold)} created in {zone} ({family})", flush=True)
-            return zone
-        except RuntimeError as e:
-            msg = str(e)
-            short = msg.splitlines()[-1][:160] if msg else "?"
-            print(f"  {zone}: {short}", flush=True)
-            if "Quota" in msg and "GPUS_ALL_REGIONS" in msg:
-                print("  global GPU quota reached -- not trying more zones")
-                return None
+    for card in CARDS:
+        machine, accel, zones = GPUS[card]
+        for zone in zones:
+            args = ["compute", "instances", "create", vm(fold), f"--zone={zone}",
+                    f"--machine-type={machine}", "--maintenance-policy=TERMINATE",
+                    f"--image-project={img_project}", f"--image-family={family}",
+                    "--boot-disk-size=150GB", "--boot-disk-type=pd-balanced",
+                    "--scopes=cloud-platform", f"--metadata={meta}",
+                    f"--metadata-from-file=startup-script={startup_file()}"]
+            if sa:
+                args.append(f"--service-account={sa}")
+            if accel:
+                args.append(f"--accelerator={accel}")
+            if SPOT:
+                args += ["--provisioning-model=SPOT", "--instance-termination-action=STOP"]
+            try:
+                gc(*args)
+                print(f"{vm(fold)} created in {zone} on {card} ({family})", flush=True)
+                return zone
+            except RuntimeError as e:
+                msg = str(e)
+                short = msg.splitlines()[-1][:160] if msg else "?"
+                print(f"  {card} {zone}: {short}", flush=True)
+                if "Quota" in msg and "GPUS_ALL_REGIONS" in msg:
+                    print("  global GPU quota reached -- not trying more zones")
+                    return None
     return None
 
 
