@@ -62,10 +62,13 @@ fi
 # A recreated disk starts empty: take back whatever the bucket already holds.
 gcloud storage cp "$OUT/fold${FOLD}_*" work/coat/ 2>/dev/null || true
 
-# Batch shape is chosen once and kept, so a resumed run continues the same
-# schedule. 24 GB fits two studies with 32-image chunks; fall back if it OOMs.
-[ -f cfg ] || echo "2 8 32" > cfg
-read B A C < cfg
+# Memory-for-speed ladder, fastest first: "batch accum chunk gradckpt".
+# Encoder chunks are already recomputed in backward, so per-block gradient
+# checkpointing on top of that recomputes twice; dropping it saves ~20% when the
+# card has room (A100 40 GB). An OOM steps one rung down and resumes. The rung
+# is kept on disk so a reboot does not climb back to one that failed.
+LADDER=("2 8 32 0" "2 8 32 1" "1 16 16 1")
+[ -f rung ] || echo 0 > rung
 
 sync_out() {
   gcloud storage rsync work/coat "$OUT" --quiet
@@ -76,20 +79,24 @@ SYNC=$!
 
 cd code
 export RSNA_KNEE_ROOT=$ROOT HF_HOME=$ROOT/hf PYTHONUNBUFFERED=1
-run() {
+while true; do
+  R=$(cat $ROOT/rung); read B A C GC <<< "${LADDER[$R]}"
+  GCFLAG=""; [ "$GC" = 1 ] && GCFLAG="--grad-checkpointing"
+  echo "run: batch $B accum $A chunk $C gradckpt $GC"
   /opt/kv/bin/python -u scripts/train.py --fold "$FOLD" --folds 5 \
     --epochs "$EPOCHS" --batch "$B" --accum "$A" --workers 7 \
     --backbone coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k --size 384 \
-    --lr 1e-3 --backbone-lr-mult 0.03 --grad-checkpointing \
-    --encoder-chunk "$C" --resume --out $ROOT/work/coat >> $ROOT/train.log 2>&1
-}
-run; rc=$?
-if [ $rc -ne 0 ] && grep -q "OutOfMemoryError" $ROOT/train.log &&
-   [ ! -f $ROOT/work/coat/fold${FOLD}_last.pt ]; then
-  echo "OOM at $B/$A/$C, falling back to 1/16/16"
-  echo "1 16 16" > $ROOT/cfg; read B A C < $ROOT/cfg
-  run; rc=$?
-fi
+    --lr 1e-3 --backbone-lr-mult 0.03 $GCFLAG \
+    --encoder-chunk "$C" --resume --out $ROOT/work/coat 2>&1 |
+    tee $ROOT/run.log >> $ROOT/train.log
+  rc=${PIPESTATUS[0]}
+  if [ $rc -ne 0 ] && grep -q "OutOfMemoryError" $ROOT/run.log &&
+     [ "$R" -lt $((${#LADDER[@]} - 1)) ]; then
+    echo "OOM on rung $R, stepping down"; echo $((R + 1)) > $ROOT/rung
+    continue
+  fi
+  break
+done
 cd $ROOT
 kill $SYNC 2>/dev/null
 # A preemption kills training too. That is not a failure: leave no marker and
