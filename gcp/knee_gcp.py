@@ -31,9 +31,11 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 SDK = Path(os.environ.get("GCLOUD_SDK", r"D:\kaggle_c\gcloud\google-cloud-sdk"))
-GCLOUD = [str(SDK / "platform" / "bundledpython" / "python.exe"),
-          str(SDK / "lib" / "gcloud.py")]
-KAGGLE = Path(r"D:\kaggle_c")
+# On the workstation gcloud runs through its bundled Python; on the always-on
+# watcher VM (gcp/watcher.sh) it is the stock gcloud on PATH.
+GCLOUD = ([str(SDK / "platform" / "bundledpython" / "python.exe"),
+           str(SDK / "lib" / "gcloud.py")] if os.name == "nt" else ["gcloud"])
+KAGGLE = Path(os.environ.get("KNEE_LOCAL", r"D:\kaggle_c"))
 PULL = KAGGLE / "work" / "coat_gcp"
 
 EPOCHS = os.environ.get("KNEE_EPOCHS", "8")
@@ -159,6 +161,7 @@ def image() -> tuple[str, str]:
 def startup_file() -> Path:
     """startup.sh with LF endings, at a path cmd-safe for gcloud to read."""
     dst = KAGGLE / "gcloud" / "startup.sh"
+    dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_bytes((REPO / "gcp" / "startup.sh").read_bytes().replace(b"\r\n", b"\n"))
     return dst
 
@@ -182,6 +185,9 @@ def create(fold, img=None) -> str | None:
                 args.append(f"--accelerator={accel}")
             if SPOT:
                 args += ["--provisioning-model=SPOT", "--instance-termination-action=STOP"]
+            # Hard cap on one boot, so a hung run cannot bill forever: Google
+            # stops it, the watcher starts it again and it resumes.
+            args += ["--max-run-duration=12h"]
             try:
                 gc(*args)
                 print(f"{vm(fold)} created in {zone} on {card} ({family})", flush=True)
@@ -259,6 +265,9 @@ def watch(args) -> None:
                 continue
             if marker(f, "FAILED"):
                 print(f"fold {f} FAILED -- see gs://{bucket()}/out/fold{f}/train.log")
+                if name in inst:  # a stopped VM still bills for its disk
+                    gc("compute", "instances", "delete", name,
+                       f"--zone={inst[name][1]}", "--quiet", check=False)
                 pending.discard(f)
                 continue
             if name not in inst:

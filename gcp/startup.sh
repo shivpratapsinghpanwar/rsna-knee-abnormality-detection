@@ -21,14 +21,24 @@ ROOT=/opt/knee
 mkdir -p $ROOT/work/coat $ROOT/data $ROOT/hf
 cd $ROOT
 
+# Never leave a broken VM running (an A100 bills ~Rs 110/h). Power off, and let
+# the watcher restart it; three failed boots in a row mark the fold FAILED so a
+# permanent fault cannot loop forever.
+fail() {
+  echo "setup failed: $1"
+  n=$(( $(cat $ROOT/bootfails 2>/dev/null || echo 0) + 1 )); echo $n > $ROOT/bootfails
+  gcloud storage cp /var/log/knee-startup.log "$OUT/startup.log" --quiet
+  [ $n -ge 3 ] && echo "setup failed $n times: $1" | gcloud storage cp - "$OUT/FAILED"
+  shutdown -h now; exit 1
+}
+
 if gcloud storage ls "$OUT/DONE" >/dev/null 2>&1; then
   echo "fold $FOLD already done"; shutdown -h now; exit 0
 fi
 
 # The image installs the NVIDIA driver on first boot; wait for it.
 for i in $(seq 90); do nvidia-smi >/dev/null 2>&1 && break; sleep 10; done
-nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || {
-  echo "no GPU driver"; exit 1; }
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || fail "no GPU driver"
 
 if [ ! -f .setup_done ]; then
   gcloud storage cp "gs://$BUCKET/stage/code.tar.gz" . && mkdir -p code &&
@@ -44,7 +54,7 @@ if [ ! -f .setup_done ]; then
   echo "corpus studies: $n"
   if [ "$n" -lt 4400 ] || [ ! -s work/weak_labels.csv ] || [ ! -s data/train.csv ] ||
      [ ! -s prep/manifest.json ] || [ ! -d code/src ]; then
-    echo "setup failed: data incomplete"; exit 1
+    fail "data incomplete"
   fi
 
   # uv brings its own Python, so this does not depend on what the image ships.
@@ -57,7 +67,8 @@ if [ ! -f .setup_done ]; then
   /opt/kv/bin/python -c "import torch; assert torch.cuda.is_available()" &&
     touch .setup_done
 fi
-[ -f .setup_done ] || { echo "setup failed"; exit 1; }
+[ -f .setup_done ] || fail "environment install"
+rm -f $ROOT/bootfails
 
 # A recreated disk starts empty: take back whatever the bucket already holds.
 gcloud storage cp "$OUT/fold${FOLD}_*" work/coat/ 2>/dev/null || true
@@ -106,6 +117,11 @@ kill $SYNC 2>/dev/null
 if [ "$(curl -sf -H Metadata-Flavor:Google \
   http://metadata.google.internal/computeMetadata/v1/instance/preempted)" = TRUE ]; then
   echo "preempted"; exit 0
+fi
+# Same for any other stop from outside (the 12 h cap, a manual stop): the OS is
+# already going down, which is not the run failing.
+if [ "$(systemctl is-system-running)" = stopping ]; then
+  echo "system stopping"; exit 0
 fi
 sync_out
 
