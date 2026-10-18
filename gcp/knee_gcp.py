@@ -210,6 +210,10 @@ def create(fold, img=None) -> str | None:
                 args.append(f"--accelerator={accel}")
             if SPOT:
                 args += ["--provisioning-model=SPOT", "--instance-termination-action=STOP"]
+            if card == "h100":
+                # a3 machines always carry a local SSD, and a stop needs to be
+                # told what happens to it. Nothing is kept there.
+                args.append("--discard-local-ssds-at-termination-timestamp=true")
             # Hard cap on one boot, so a hung run cannot bill forever: Google
             # stops it, the watcher starts it again and it resumes.
             args += ["--max-run-duration=12h"]
@@ -277,6 +281,7 @@ def pull(fold) -> None:
 def watch(args) -> None:
     pending, img, stuck = set(args.folds), None, {}
     while pending:
+        before = len(pending)
         inst = instances()
         # With a one-GPU quota, folds go strictly in order: otherwise a stopped
         # VM frees the slot and a later fold grabs it before the restart can.
@@ -322,7 +327,9 @@ def watch(args) -> None:
                         print(f"fold {f}: {zone} out of capacity, rebuilding", flush=True)
         print(time.strftime("[%H:%M]"), "; ".join(
             f"{ARCH} f{f}: {last_epoch(f)}" for f in sorted(pending)) or "all done", flush=True)
-        if pending:
+        # A fold that just finished frees the GPU: start the next one now
+        # rather than five minutes from now.
+        if pending and len(pending) == before:
             time.sleep(300)
 
 
