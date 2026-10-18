@@ -47,6 +47,9 @@ ARCHS = {
     # A pure CNN, unlike CoAtNet and the public stack's readers: a blend gains
     # from models whose mistakes differ, not from a second copy of the same one.
     "effv2m": ("tf_efficientnetv2_m.in21k_ft_in1k", "0.1"),
+    # DINOv2 ViT-L (Apache-2.0). A self-supervised encoder is wrecked by a
+    # head-sized step; the public DINOv2 arm trains it at 8e-6 against 1e-3.
+    "dinol": ("vit_large_patch14_dinov2.lvd142m", "0.01"),
 }
 ARCH = os.environ.get("KNEE_ARCH", "coat")
 BACKBONE, LR_MULT = ARCHS[ARCH]

@@ -21,7 +21,7 @@ from torch.utils.checkpoint import checkpoint
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .config import MAX_SERIES, SLICES
+from .config import MAX_SERIES, SIZE, SLICES
 from .labels import TARGETS
 
 N_TARGETS = len(TARGETS)
@@ -69,9 +69,15 @@ class SeriesEncoder(nn.Module):
         # Images per backbone call. See forward() for why this is the lever that
         # decides whether a heavy backbone fits at all.
         self.chunk = int(chunk)
+        extra = {}
+        if backbone.startswith(("vit_", "eva", "deit")):
+            # Plain ViTs fix their input size at build time (DINOv2 ships at
+            # 518); building at the corpus size resamples the position
+            # embeddings once instead of failing on every 384 px slice.
+            extra["img_size"] = SIZE
         self.net = timm.create_model(
             backbone, pretrained=pretrained, num_classes=0, in_chans=3,
-            drop_rate=drop,
+            drop_rate=drop, **extra,
         )
         if grad_checkpointing:
             # The MIL structure means one study is MAX_SERIES * SLICES = 64
