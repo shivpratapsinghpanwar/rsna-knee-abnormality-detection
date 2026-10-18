@@ -16,7 +16,10 @@ echo "=== boot $(date -u +%FT%TZ)"
 md() { curl -sf -H Metadata-Flavor:Google \
   "http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1"; }
 FOLD=$(md fold); BUCKET=$(md bucket); EPOCHS=$(md epochs)
-OUT=gs://$BUCKET/out/fold$FOLD
+# VMs launched before model families existed carry none of these three.
+OUT=$(md out); OUT=${OUT:-gs://$BUCKET/out/fold$FOLD}
+BACKBONE=$(md backbone); BACKBONE=${BACKBONE:-coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k}
+LRMULT=$(md lrmult); LRMULT=${LRMULT:-0.03}
 ROOT=/opt/knee
 mkdir -p $ROOT/work/coat $ROOT/data $ROOT/hf
 cd $ROOT
@@ -98,8 +101,8 @@ while true; do
   echo "run: batch $B accum $A chunk $C gradckpt $GC"
   /opt/kv/bin/python -u scripts/train.py --fold "$FOLD" --folds 5 \
     --epochs "$EPOCHS" --batch "$B" --accum "$A" --workers "$WORKERS" \
-    --backbone coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k --size 384 \
-    --lr 1e-3 --backbone-lr-mult 0.03 $GCFLAG \
+    --backbone "$BACKBONE" --size 384 \
+    --lr 1e-3 --backbone-lr-mult "$LRMULT" $GCFLAG \
     --encoder-chunk "$C" --resume --out $ROOT/work/coat 2>&1 |
     tee $ROOT/run.log >> $ROOT/train.log
   rc=${PIPESTATUS[0]}

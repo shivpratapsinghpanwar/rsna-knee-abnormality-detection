@@ -5,7 +5,9 @@
     python gcp/knee_gcp.py launch 2 3 4     # one spot VM per fold
     python gcp/knee_gcp.py watch 2 3 4      # restart after preemption, pull results
     python gcp/knee_gcp.py status
-    python gcp/knee_gcp.py down             # delete every knee-f* VM
+    python gcp/knee_gcp.py down             # delete every knee-*f<N> VM
+
+KNEE_ARCH picks the model family (ARCHS below); CoAtNet is the default.
 
 Each VM runs gcp/startup.sh on every boot, which trains with --resume and
 syncs to gs://<bucket>/out/fold<N>/ every 10 min, so a preemption costs at most
@@ -36,7 +38,21 @@ SDK = Path(os.environ.get("GCLOUD_SDK", r"D:\kaggle_c\gcloud\google-cloud-sdk"))
 GCLOUD = ([str(SDK / "platform" / "bundledpython" / "python.exe"),
            str(SDK / "lib" / "gcloud.py")] if os.name == "nt" else ["gcloud"])
 KAGGLE = Path(os.environ.get("KNEE_LOCAL", r"D:\kaggle_c"))
-PULL = KAGGLE / "work" / "coat_gcp"
+
+# Model families: tag -> (timm backbone, backbone lr multiplier). CoAtNet keeps
+# its original names (knee-f<N>, out/fold<N>) so runs already in the bucket
+# still resolve; every other family is namespaced by its tag.
+ARCHS = {
+    "coat": ("coatnet_rmlp_2_rw_384.sw_in12k_ft_in1k", "0.03"),
+    # A pure CNN, unlike CoAtNet and the public stack's readers: a blend gains
+    # from models whose mistakes differ, not from a second copy of the same one.
+    "effv2m": ("tf_efficientnetv2_m.in21k_ft_in1k", "0.1"),
+}
+ARCH = os.environ.get("KNEE_ARCH", "coat")
+BACKBONE, LR_MULT = ARCHS[ARCH]
+PULL = KAGGLE / "work" / ("coat_gcp" if ARCH == "coat" else f"{ARCH}_gcp")
+# The watcher VM has no use for the checkpoints, and a small disk.
+DO_PULL = os.environ.get("KNEE_PULL", "1") == "1"
 
 EPOCHS = os.environ.get("KNEE_EPOCHS", "8")
 SPOT = os.environ.get("KNEE_SPOT", "1") == "1"
@@ -104,7 +120,12 @@ def bucket() -> str:
 
 
 def vm(fold) -> str:
-    return f"knee-f{fold}"
+    return f"knee-f{fold}" if ARCH == "coat" else f"knee-{ARCH}-f{fold}"
+
+
+def out(fold) -> str:
+    sub = f"fold{fold}" if ARCH == "coat" else f"{ARCH}/fold{fold}"
+    return f"gs://{bucket()}/out/{sub}"
 
 
 def code_tarball() -> bytes:
@@ -169,7 +190,8 @@ def startup_file() -> Path:
 def create(fold, img=None) -> str | None:
     img_project, family = img or image()
     sa = sa_email()
-    meta = f"fold={fold},bucket={bucket()},epochs={EPOCHS},install-nvidia-driver=True"
+    meta = (f"fold={fold},bucket={bucket()},epochs={EPOCHS},out={out(fold)},"
+            f"backbone={BACKBONE},lrmult={LR_MULT},install-nvidia-driver=True")
     for card in CARDS:
         machine, accel, zones = GPUS[card]
         for zone in zones:
@@ -210,18 +232,19 @@ def launch(args) -> None:
 
 
 def instances() -> dict:
-    rows = json.loads(gc("compute", "instances", "list", "--filter=name~knee-f",
+    # Trainers only: knee-f<N> and knee-<tag>-f<N>, never knee-watch.
+    rows = json.loads(gc("compute", "instances", "list", "--filter=name~^knee-.*f[0-9]+$",
                          "--format=json(name,status,zone)") or "[]")
     return {r["name"]: (r["status"], r["zone"].rsplit("/", 1)[-1]) for r in rows}
 
 
 def marker(fold, name) -> bool:
-    return bool(gc("storage", "ls", f"gs://{bucket()}/out/fold{fold}/{name}",
+    return bool(gc("storage", "ls", f"{out(fold)}/{name}",
                    check=False, quiet=True))
 
 
 def last_epoch(fold) -> str:
-    log = gc("storage", "cat", f"gs://{bucket()}/out/fold{fold}/train.log",
+    log = gc("storage", "cat", f"{out(fold)}/train.log",
              check=False, quiet=True)
     lines = [l for l in log.splitlines() if "epoch" in l and "AUC" in l]
     return lines[-1].strip() if lines else "(no epoch yet)"
@@ -230,16 +253,18 @@ def last_epoch(fold) -> str:
 def status(_args=None) -> None:
     inst = instances()
     for name, (st, zone) in sorted(inst.items()):
-        f = name.removeprefix("knee-f")
-        print(f"{name:8s} {st:11s} {zone:15s} {last_epoch(f)}")
+        f = name.rsplit("-f", 1)[-1]
+        print(f"{name:14s} {st:11s} {zone:15s} {last_epoch(f) if name == vm(f) else ''}")
     if not inst:
         print("no knee VMs")
 
 
 def pull(fold) -> None:
+    if not DO_PULL:
+        return
     PULL.mkdir(parents=True, exist_ok=True)
-    src = f"gs://{bucket()}/out/fold{fold}"
-    for pat in ("fold*_coatnet*.pt", "fold*_history.json", "train.log"):
+    src = out(fold)
+    for pat in (f"fold{fold}_{BACKBONE}.pt", "fold*_history.json", "train.log"):
         gc("storage", "cp", f"{src}/{pat}", str(PULL), check=False)
     log = PULL / "train.log"
     if log.exists():
@@ -260,11 +285,11 @@ def watch(args) -> None:
                 if name in inst:
                     gc("compute", "instances", "delete", name,
                        f"--zone={inst[name][1]}", "--quiet", check=False)
-                print(f"fold {f} DONE -> {PULL}", flush=True)
+                print(f"{ARCH} fold {f} DONE", flush=True)
                 pending.discard(f)
                 continue
             if marker(f, "FAILED"):
-                print(f"fold {f} FAILED -- see gs://{bucket()}/out/fold{f}/train.log")
+                print(f"{ARCH} fold {f} FAILED -- see {out(f)}/train.log")
                 if name in inst:  # a stopped VM still bills for its disk
                     gc("compute", "instances", "delete", name,
                        f"--zone={inst[name][1]}", "--quiet", check=False)
@@ -293,7 +318,7 @@ def watch(args) -> None:
                         stuck.pop(f)
                         print(f"fold {f}: {zone} out of capacity, rebuilding", flush=True)
         print(time.strftime("[%H:%M]"), "; ".join(
-            f"f{f}: {last_epoch(f)}" for f in sorted(pending)) or "all done", flush=True)
+            f"{ARCH} f{f}: {last_epoch(f)}" for f in sorted(pending)) or "all done", flush=True)
         if pending:
             time.sleep(300)
 
