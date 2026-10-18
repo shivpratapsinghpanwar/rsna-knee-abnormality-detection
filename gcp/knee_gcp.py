@@ -63,6 +63,9 @@ GPUS = {
            ["us-central1-a", "us-central1-b", "us-central1-c", "us-east4-a",
             "us-east4-c", "us-east1-b", "us-east1-c", "us-east1-d",
             "us-west1-a", "us-west1-b", "us-west4-a", "us-west4-c"]),
+    # One H100 80 GB, 26 vCPUs: twice the decode workers of the A100 box too.
+    "h100": ("a3-highgpu-1g", None,
+             ["us-central1-a", "us-central1-b", "us-central1-c"]),
     "a100": ("a2-highgpu-1g", None,
              ["us-central1-a", "us-central1-b", "us-central1-c", "us-central1-f"]),
     "v100": ("n1-standard-8", "type=nvidia-tesla-v100,count=1",
