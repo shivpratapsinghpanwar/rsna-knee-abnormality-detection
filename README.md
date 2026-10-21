@@ -39,13 +39,18 @@ Report labellers, scored against the 58 gold-labelled studies:
 
 ## Releases
 
-| What | Where |
+Everything is on Hugging Face:
+[shivpratapsingh/rsna-knee-coatnet-dinov2](https://huggingface.co/shivpratapsingh/rsna-knee-coatnet-dinov2).
+
+| What | Folder there |
 | --- | --- |
-| CoAtNet-2 weights, 5 folds (fp32, 1.4 GB) | Kaggle dataset `shivpratap0007/rsna-knee-coatnet2-5fold` |
-| DINOv2 ViT-L weights, 4 folds (fp32, 4.6 GB) | Kaggle dataset `shivpratap0007/rsna-knee-dinov2-large-4fold` |
-| Report-derived labels + out-of-fold predictions | Kaggle dataset `shivpratap0007/rsna-knee-report-labels-oof` |
-| All of the above in one place | Hugging Face model repo (linked from the Kaggle datasets) |
-| Final submission notebook | Kaggle notebook `shivpratap0007/rsna-knee-958-r7-04` |
+| CoAtNet-2 weights, 5 folds (fp32, 1.4 GB) | `coatnet_rmlp_2_rw_384/` |
+| DINOv2 ViT-L weights, 4 folds (fp32, 4.6 GB) | `vit_large_patch14_dinov2/` |
+| Report-derived labels: regex, Qwen2.5-7B, blend | `labels/` |
+| Out-of-fold predictions + the cloud fold split | `oof/` |
+| Checksums for every file | `SHA256SUMS` |
+
+The final submission notebook is built by `scripts/submission/build_r7.py` from public notebooks.
 
 ## How it works
 
@@ -146,7 +151,7 @@ those are not redistributed here.
 
 ## Licence and data
 
-Anything derived from the RSNA Knee competition data (labels, predictions,
+Code in this repository: [MIT](LICENSE). Anything derived from the RSNA Knee competition data (labels, predictions,
 weights) is subject to the competition's
 [rules and data terms](https://www.kaggle.com/competitions/rsna-knee-abnormality-detection/rules).
 Research use only, not for clinical decisions.

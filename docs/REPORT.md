@@ -105,10 +105,10 @@ We hold study-level labels for all 4,407 training studies, made by our own label
 
 | Item | Size | Where it is published |
 | --- | --- | --- |
-| CoAtNet-2, 5 folds (fp32) | 1.4 GB | Kaggle dataset `shivpratap0007/rsna-knee-coatnet2-5fold`, Hugging Face |
-| DINOv2-L, 4 folds (fp32) | 4.6 GB | Kaggle dataset `shivpratap0007/rsna-knee-dinov2-large-4fold`, Hugging Face |
-| Derived labels + OOF predictions | 5 MB | Kaggle dataset `shivpratap0007/rsna-knee-report-labels-oof`, Hugging Face |
-| Code: labeller, corpus builder, trainer, inference, cloud kit | | this repository |
+| CoAtNet-2, 5 folds (fp32) | 1.4 GB | [Hugging Face](https://huggingface.co/shivpratapsingh/rsna-knee-coatnet-dinov2) |
+| DINOv2-L, 4 folds (fp32) | 4.6 GB | [Hugging Face](https://huggingface.co/shivpratapsingh/rsna-knee-coatnet-dinov2) |
+| Derived labels + OOF predictions | 5 MB | [Hugging Face](https://huggingface.co/shivpratapsingh/rsna-knee-coatnet-dinov2) |
+| Code: labeller, corpus builder, trainer, inference, cloud kit | | this repository (MIT) |
 
 Dropped: ResNet and DINOv3-tiny checkpoints (superseded), the ROI variant (worse), duplicate copies and corpora built before the laterality and crop fixes.
 
