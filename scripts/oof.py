@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -56,11 +57,30 @@ def main() -> None:
     ap.add_argument("--batch", type=int, default=2)
     ap.add_argument("--tta", default="none")
     ap.add_argument("--out", default="")
+    ap.add_argument("--fold-file", default="",
+                    help="CSV of StudyInstanceUID,fold to use instead of make_folds. "
+                         "make_folds breaks ties with np.argsort, whose order differs "
+                         "on AVX-512 CPUs, so cloud-trained folds need the cloud split.")
+    ap.add_argument("--fp32", action="store_true",
+                    help="no fp16 autocast and no TF32: full precision, as a T4 "
+                         "(which has no TF32) would run it")
+    ap.add_argument("--half-weights", action="store_true",
+                    help="round weights through fp16, as push_weights --half ships them")
     args = ap.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    amp = device.type == "cuda"
-    models = load_models([Path(p) for p in args.ckpt], device)
+    amp = device.type == "cuda" and not args.fp32
+    if args.fp32:
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+    models = load_models([Path(p) for p in args.ckpt], [device])
+    if args.half_weights:
+        with torch.no_grad():
+            for m, *_ in models:
+                for v in m.state_dict().values():
+                    if v.is_floating_point():
+                        v.copy_(v.half().float())
+    t0 = time.time()
     folds_of = [int(torch.load(p, map_location="cpu", weights_only=False)["fold"])
                 for p in args.ckpt]
 
@@ -72,8 +92,14 @@ def main() -> None:
     labels = labels.reset_index(drop=True)
 
     # Must match training exactly, or "out-of-fold" is a lie.
-    fold = make_folds(labels, args.folds, args.seed,
-                      groups=report_groups(labels, CSV))
+    if args.fold_file:
+        ff = pd.read_csv(args.fold_file).set_index("StudyInstanceUID")["fold"]
+        fold = labels.StudyInstanceUID.map(ff).to_numpy()
+        assert not np.isnan(fold.astype(float)).any(), "fold file misses studies"
+        fold = fold.astype(int)
+    else:
+        fold = make_folds(labels, args.folds, args.seed,
+                          groups=report_groups(labels, CSV))
     by_study: dict[str, dict[int, str]] = {}
     for r in corpus.itertuples():
         by_study.setdefault(r.StudyInstanceUID, {})[r.slot] = r.path
@@ -82,7 +108,7 @@ def main() -> None:
     oof = np.full((len(labels), len(TARGETS)), np.nan, dtype=np.float32)
     covered = np.zeros(len(labels), dtype=bool)
 
-    for (model, size, _crop), f in zip(models, folds_of):
+    for (model, size, _crop, _prep), f in zip(models, folds_of):
         idx = np.where(fold == f)[0]
         print(f"fold {f}: scoring {len(idx)} held-out studies at size {size}")
         for start in range(0, len(idx), args.batch):
@@ -110,7 +136,7 @@ def main() -> None:
                 print(f"  {start + len(chunk)}/{len(idx)}", flush=True)
 
     n = int(covered.sum())
-    print(f"\ncovered {n}/{len(labels)} studies out of fold")
+    print(f"\ncovered {n}/{len(labels)} studies out of fold in {time.time() - t0:.0f} s")
     if n == 0:
         raise SystemExit("no studies scored -- do the checkpoints match --folds?")
 

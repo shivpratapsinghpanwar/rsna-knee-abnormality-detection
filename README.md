@@ -1,204 +1,152 @@
 # RSNA Knee Abnormality Detection
 
-Competition: https://www.kaggle.com/competitions/rsna-knee-abnormality-detection
+Team `_the_name _is_NERD` in the Kaggle competition
+[RSNA Knee Abnormality Detection](https://www.kaggle.com/competitions/rsna-knee-abnormality-detection):
+12 findings per knee MRI study, scored by macro-averaged ROC AUC.
 
-## Task
-Predict 12 binary abnormality findings per knee MRI study, scored by
-**macro-averaged ROC AUC**. Submission columns, in order:
+**Result:** public leaderboard **0.958**, rank 810 of about 6,300 (Oct 21, 2026, before the private
+leaderboard). Our own best model, a CoAtNet-2 trained on labels we extracted from the radiology reports,
+scored **0.916** alone; the 0.958 came from blending into the public model stack. The full story, with every
+architecture tried and every mistake we made, is in **[docs/REPORT.md](docs/REPORT.md)**.
 
-```
-ACL, MCL, Medial Meniscus, Lateral Meniscus, Medial OA, Lateral OA,
-PF OA, Effusion, Synovitis, Baker's, Contusion, Fracture
-```
+**What is not in this repository or its releases:** every gold label column and all report text are left
+out. Both are competition data; get them from the competition itself.
 
-## The two facts that determine the approach
+## Results at a glance
 
-**1. Labels come from reports, not from humans.** Only 58 of 4407 training
-studies (1.3%) carry gold labels, but all 4407 carry a free-text radiology report
-in roughly 12 languages. The image model therefore trains on report-derived weak
-labels; the 58 gold studies are only good enough to validate the labeller, not
-to train on.
+![Public leaderboard score per scored submission](docs/img/leaderboard_timeline.png)
 
-Labelling therefore has no inference-time cost — the reports do not exist at
-test time — which means it can be arbitrarily expensive. Blending a 7B LLM with
-the regex lexicon takes the labels from 0.738 to **0.846** against gold. See
-[FINDINGS.md](FINDINGS.md).
+| Model | Our validation (weak-label macro AUC) | Public leaderboard |
+| --- | --- | --- |
+| ResNet34, 3 folds, 256 px, regex labels | 0.780 | 0.746 |
+| ResNet34, 5 folds, 384 px, regex + LLM labels | | 0.768 |
+| DINOv3 ConvNeXt-tiny, one learning rate (bug) | fell to 0.540 | 0.789 |
+| DINOv3 ConvNeXt-tiny, split learning rate | | 0.865 |
+| **CoAtNet-2 (`coatnet_rmlp_2_rw_384`), fold 0** | 0.863 | **0.916** |
+| CoAtNet-2, 5 folds | 0.858-0.868 per fold | blended only |
+| DINOv2 ViT-L, 4 folds | 0.856-0.870 per fold | blended only |
+| Public 0.958 stack + our CoAtNet arm at 0.03-0.15 | | 0.958 |
+| Public 0.958 stack + DINOv2/CoAtNet arm at 0.05-0.10 | | 0.956-0.957 |
+| Public 0.958 stack + heliosli R7 (final pick) | | 0.958 |
 
-**2. The images do not fit on a workstation.** The DICOM corpus is ~300-600 GB
-(~800k files) and Kaggle serves it at a couple of MB/s, so the corpus is built
-**on Kaggle** where the data is already mounted. Nothing in the pipeline assumes
-a full local copy of the DICOM.
+Report labellers, scored against the 58 gold-labelled studies:
 
-The *mosaic* corpus is another matter: at 8.9 GB it fits anywhere, so training
-runs wherever there is a GPU — Kaggle when quota allows, otherwise locally.
+| Labeller | Macro AUC |
+| --- | --- |
+| Regex lexicon, 12 languages (`src/rsna_knee/reports.py`) | 0.738 |
+| Qwen2.5-7B-Instruct (`scripts/llm_label.py`) | 0.816 |
+| 50/50 blend (`scripts/build_weak_labels.py --llm`) | **0.846** |
 
-## Pipeline
+## Releases
 
-| stage | code | runs where |
-|---|---|---|
-| report -> graded weak labels | `src/rsna_knee/reports.py` (regex) + `scripts/llm_label.py` (LLM), blended by `scripts/build_weak_labels.py` | Kaggle GPU once, then anywhere |
+| What | Where |
+| --- | --- |
+| CoAtNet-2 weights, 5 folds (fp32, 1.4 GB) | Kaggle dataset `shivpratap0007/rsna-knee-coatnet2-5fold` |
+| DINOv2 ViT-L weights, 4 folds (fp32, 4.6 GB) | Kaggle dataset `shivpratap0007/rsna-knee-dinov2-large-4fold` |
+| Report-derived labels + out-of-fold predictions | Kaggle dataset `shivpratap0007/rsna-knee-report-labels-oof` |
+| All of the above in one place | Hugging Face model repo (linked from the Kaggle datasets) |
+| Final submission notebook | Kaggle notebook `shivpratap0007/rsna-knee-958-r7-04` |
+
+## How it works
+
+![Pipeline from competition data to leaderboard](docs/img/pipeline.png)
+
+**1. Labels come from reports, not from humans.** Only 58 of 4,407 training studies (1.3%) carry gold
+labels, but all 4,407 carry a free-text radiology report in about 12 languages. The image model trains on
+report-derived graded labels; the 58 gold studies only validate the labeller. Reports do not exist at test
+time, so labelling can be as expensive as we like: blending a 7B LLM with the regex lexicon takes the labels
+from 0.738 to 0.846 against gold. See [FINDINGS.md](FINDINGS.md).
+
+**2. The images do not fit on a workstation.** The DICOM corpus is about 300-600 GB, so the training corpus
+is built on Kaggle, where the data is mounted, and downloaded as one 11 GB archive.
+
+| Stage | Code | Runs where |
+| --- | --- | --- |
+| report -> graded labels | `src/rsna_knee/reports.py` (regex) + `scripts/llm_label.py` (LLM), blended by `scripts/build_weak_labels.py` | Kaggle GPU once, then anywhere |
 | series triage | `src/rsna_knee/series.py` | anywhere |
-| DICOM -> JPEG mosaic corpus | `src/rsna_knee/{dicom_io,preprocess}.py`, `scripts/preprocess_series.py` | Kaggle CPU kernel |
-| training | `src/rsna_knee/{data,model}.py`, `scripts/train.py` | Kaggle GPU or local 3080 |
+| DICOM -> 384 px corpus | `src/rsna_knee/{dicom_io,preprocess}.py`, `scripts/preprocess_series.py` | Kaggle CPU notebook |
+| training | `src/rsna_knee/{data,model}.py`, `scripts/train.py` | local GPU, Kaggle GPU or GCP spot (`gcp/`) |
+| out-of-fold scoring | `scripts/oof.py` | local GPU |
 | submission | `scripts/infer.py` | Kaggle, offline |
 
-### Storage format
-Each selected series becomes **one JPEG**: 16 evenly-spaced slices at 384x384,
-tiled 4x4 into a 1536x1536 mosaic (~0.5 MB). That is ~8.9 GB for the whole
-training set — inside Kaggle's 20 GB output cap — with no custom container to
-maintain. `preprocess.py` round-trips mosaic <-> volume exactly, which
-`tests/test_pipeline.py` pins.
+### Corpus
 
-**Format is what buys the resolution.** The first corpus was lossless PNG at
-256, and 256 discards roughly 75% of the native pixels — worst for the subtle
-findings we score lowest on. The 20 GB cap looked like the blocker but was not:
-measured on real mosaics, JPEG q95 is **480 KB/series against PNG's 906 KB at
-384**, so 2.25x the pixels fits in *less* space than the old corpus, at 0.18%
-mean error. Set `RSNA_KNEE_SIZE` / `RSNA_KNEE_EXT` to build a corpus at another
-scale; checkpoints record the size they trained at, so models from different
-corpora can be blended.
+Each study keeps at most one series per slot, so the study tensor has a fixed shape:
 
-### Series selection
-Studies carry 3-14 series (mean 5.5), mostly redundant repeats of a plane. We
-keep at most one per slot:
-
-| slot | sequence | what it carries |
-|---|---|---|
+| Slot | Sequence | What it carries |
+| --- | --- | --- |
 | 0 | sagittal, fluid-sensitive | effusion, contusion, ACL, cartilage |
-| 1 | sagittal, non-fluid (PD/T1) | meniscal tears — the highest-value sequence |
+| 1 | sagittal, non-fluid (PD/T1) | meniscal tears |
 | 2 | coronal, fluid-sensitive | MCL, meniscus, compartment OA |
 | 3 | axial, fluid-sensitive | patellofemoral cartilage, synovitis, Baker's cyst |
 
-This covers all 4407 studies with 17,071 series (70% of the total) and gives the
-study tensor a fixed shape. `train_series.csv` already supplies plane and
-fluid-sensitivity, so no DICOM header parsing is needed.
+Every series is cropped to a fixed **140 mm** physical field, windowed **per series** (not per slice), and
+**mirrored for right knees** so that medial is always on the same side; without that, the four
+medial/lateral targets are unlearnable. 16 slices per series at 384 px, stored as JPEG mosaics.
 
 ### Model
-The label is attached to the study but the evidence is in a few slices of one or
-two series, so the model pools twice with **per-target attention**:
+
+The label belongs to the study but the evidence sits in a few slices of one or two series, so the model
+pools twice with per-target attention (multiple-instance learning):
 
 ```
 slices of a series --attention--> series embedding
 series of a study  --attention--> study embedding --> 12 logits
 ```
 
-Attention is per-target because the slices that matter for Baker's cyst are not
-the ones that matter for PF OA. Slices enter a standard 2.5D backbone with their
-two neighbours as RGB channels. Loss is soft-target BCE, which preserves the
-labeler's grading instead of collapsing it to 0/1.
-
-**No horizontal flip augmentation.** Six targets are side-specific, and on
-coronal and axial images image-left/right *is* medial/lateral, so a flip
-relabels the anatomy.
+Slices enter a 2.5D backbone with their two neighbours as channels. Loss is soft-target BCE on the graded
+labels. Pretrained backbones need split learning rates (about 3e-5 backbone, 1e-3 head); one rate drove
+DINOv3 to chance. No horizontal flip augmentation: six targets are side-specific.
 
 ## Running it
 
 ```bash
-# local: env lives off the project path (see note below)
+# environment off the project path (a ';' in a Windows path breaks C extensions); Python 3.13
 uv venv --python 3.13 D:/kaggle_c/.venv
 uv pip install --python D:/kaggle_c/.venv/Scripts/python.exe -r requirements.txt
 
-python scripts/build_weak_labels.py          # reports -> weak_labels.csv
-python tests/test_reports.py                 # 24 labeler regression cases
-python tests/test_pipeline.py                # preprocessing / folds / model
+python scripts/build_weak_labels.py --llm labels/llm_labels.csv   # reports -> graded labels
+python tests/test_reports.py                                      # labeller regression cases
+python tests/test_pipeline.py                                     # preprocessing / folds / model
 
-python scripts/fetch_dev_subset.py --studies 48   # stream a local dev corpus
-python scripts/train.py --fold 0 --epochs 8
+python scripts/train.py --fold 0 --epochs 8 --lr 1e-3 --backbone-lr-mult 0.03
+python scripts/oof.py --ckpt <fold checkpoints> --fold-file <fold csv>   # leak-free OOF AUC
 python scripts/infer.py --ckpt <ckpt.pt> --split test
 ```
 
 ### On Kaggle
 
 ```bash
-python scripts/kaggle_push_code.py           # ship src/ as a private dataset
-python scripts/kaggle_run.py preprocess      # build the mosaic corpus (CPU, hours)
-python scripts/kaggle_run.py train --fold 0  # one GPU kernel per fold
-python scripts/kaggle_run.py train --fold 1
-python scripts/kaggle_run.py train --fold 2
+python scripts/kaggle_push_code.py           # ship src/ as a dataset
+python scripts/kaggle_run.py preprocess      # build the corpus (CPU notebook, hours)
+python scripts/kaggle_run.py train --fold 0  # one GPU notebook per fold
 python scripts/kaggle_run.py submit          # offline inference -> submission.csv
-
-python scripts/kaggle_run.py preprocess --status
-python scripts/kaggle_run.py train --status --all-folds
+python scripts/push_weights.py               # upload local checkpoints as a dataset
 ```
 
-Re-run `kaggle_push_code.py` after any source change: kernels read the dataset,
-not this checkout. Notebooks are generated by `scripts/make_notebooks.py`, so
-edit that rather than the `.ipynb` files.
+Notes that cost us time:
 
-Each stage moves its output to the next as a **kernel source**, so nothing has to
-be re-uploaded: notebook 01's corpus mounts into 02, and each fold's checkpoints
-mount into 03. Folds get separate kernel ids (`rsna-knee-train-fold-0`, `-fold-1`,
-...) because pushing them to one id would overwrite earlier weights.
+- **Kaggle names a notebook from its title, not the `id` you supply**; `kaggle_run.py` derives the title
+  from the slug so the two cannot disagree.
+- **Input paths are not uniform.** A competition mounts at `/kaggle/input/<slug>/`, a dataset at
+  `/kaggle/input/datasets/<user>/<slug>/`; `config.find_input()` searches instead of assuming.
+- **The GPU quota is 30 h a week, account-wide.** A push that fails on quota leaves the notebook showing
+  its previous COMPLETE status; check the push output. Run CPU work as CPU notebooks.
+- **API limits.** File listing returns 503 after a few thousand calls; sustained downloading returns 429
+  with a ~13 h `Retry-After`. Pack a corpus into one archive inside a notebook instead.
+- **Fold splits must travel with checkpoints.** `make_folds` broke ties differently on AVX-512 cloud CPUs,
+  so cloud and local splits agreed on only 22% of studies. Pass the saved split with `--fold-file`.
 
-> **Kaggle names a kernel from its title, not the `id` you supply.** An id of
-> `rsna-knee-train-f0` under the title "RSNA Knee - train fold 0" silently
-> creates `rsna-knee-train-fold-0`, and later lookups by id fail with a
-> *permissions* error that reads like broken auth. `kaggle_run.py` derives the
-> title from the slug so the two cannot disagree.
+## Credits
 
-Both long stages stop under their own `--max-minutes` budget rather than being
-killed at Kaggle's session limit, which can discard the output entirely.
-Preprocessing is resumable, so a second run continues from what the first wrote.
+The 0.958 submissions build on public work by goodpjw2008 (2.5D ConvNeXt reader and stack), nartaa
+(Raptor CoAtNet weights), heliosli (R6/R7 compact models and per-finding weights) and rostigor (R6 copy),
+credited in each notebook. Our v4 training labels mixed in public LLM labels by stevenleehans and pilkwang;
+those are not redistributed here.
 
-> **Input paths are not uniform.** A competition mounts at `/kaggle/input/<slug>/`
-> but a dataset at `/kaggle/input/datasets/<user>/<slug>/`. `config.find_input()`
-> searches instead of assuming; hard-coding the dataset shape is what made the
-> first preprocessing run die with `ModuleNotFoundError`.
+## Licence and data
 
-> **Windows note.** This checkout sits under a directory containing a `;`, which
-> Windows treats as a PATH separator — a virtualenv created *inside* it cannot
-> load C extensions (`numpy` fails with a DLL error). Keep the venv and data on a
-> clean path such as `D:\kaggle_c`. Python 3.14 has no torch wheels; use 3.13.
-
-## Kaggle API rate limits
-
-Two limits bite when pulling data locally, and both fail quietly:
-
-- **Listing** — `competition_list_files` pages 200 at a time and returns **503**
-  after a few thousand calls. Enumerating the ~800k files via the API is not
-  viable; build the manifest inside a notebook with filesystem calls instead.
-- **Downloading** — sustained parallel downloading returns **429**, and the
-  observed `Retry-After` is ~13 hours. 16 workers trips it within about an hour.
-
-`fetch_dev_subset.py` therefore defaults to 6 workers and shares one backoff gate
-across threads, so a single 429 pauses every worker rather than having each retry
-into the same wall. If the ban is longer than 15 minutes it stops cleanly; the
-run is resumable, so re-running once the window clears picks up where it left off.
-
-## Compute budget
-
-Kaggle's GPU quota is **30 h per week, account-wide** — not per competition, so
-other projects spend it too. When it runs out `kaggle_run.py` fails at push, and
-the kernel keeps reporting its *previous* version's COMPLETE status, which looks
-exactly like a successful run. Check the push output, not the status.
-
-Two consequences shape the layout here:
-
-- Anything that does not need a GPU runs as a **CPU kernel** (preprocessing,
-  packing), which draws on a separate and much larger budget.
-- Moving a corpus off Kaggle goes through `kaggle_run.py pack`, which tars it
-  inside a CPU kernel first. The kernel-output API fetches loose files serially
-  — the 17,071-file corpus came down at ~3 files/minute, versus ~2 MB/s for the
-  single archive.
-
-Training also runs locally: an RTX 3080 is faster than a Kaggle T4, and at 10 GB
-it needs `--batch 1 --grad-checkpointing` at 384 rather than the T4's batch 2.
-
-## Status
-
-- **Labeller** — blended regex + Qwen2.5-7B, **0.846** macro AUC on the 58 gold
-  studies, up from 0.663 (v1 regex) and 0.738 (final regex). Only 7.9% of
-  studies now carry no signal at all, down from 19.4%. 24 regression tests.
-- **Corpus** — 17,071 mosaics over all 4,407 studies. Rebuilt at **384 JPEG**
-  (8.9 GB) after the first pass at 256 PNG.
-- **Image model** — three folds at 256 on regex-only labels: weak **0.780**,
-  gold **0.776**. One fold at 384 on the same labels: weak **0.787** (+0.008),
-  gold 0.726.
-- **Not yet trained on the blended labels.** That is the biggest pending gain
-  and it is blocked only on GPU time, not on code.
-- **Weakest target is MCL** — 0.611 in the image model, and the rarest at 4.7%
-  positive. Its *labels* improved most from the LLM (0.813 → 0.959), so this is
-  the first thing to re-check after a retrain.
-- **Submission** — verified end to end offline, valid format; not yet entered on
-  the leaderboard.
-
+Anything derived from the RSNA Knee competition data (labels, predictions,
+weights) is subject to the competition's
+[rules and data terms](https://www.kaggle.com/competitions/rsna-knee-abnormality-detection/rules).
+Research use only, not for clinical decisions.
