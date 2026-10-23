@@ -4,8 +4,8 @@ Team `_the_name _is_NERD` in the Kaggle competition
 [RSNA Knee Abnormality Detection](https://www.kaggle.com/competitions/rsna-knee-abnormality-detection):
 12 findings per knee MRI study, scored by macro-averaged ROC AUC.
 
-**Result:** public leaderboard **0.958**, rank 810 of about 6,300 (Oct 21, 2026, before the private
-leaderboard). Our own best model, a CoAtNet-2 trained on labels we extracted from the radiology reports,
+**Result:** private leaderboard **0.942** (public 0.958), final rank **902 of 6,425 teams**. Every
+0.958-public submission landed on 0.941-0.942 private, so none of the late blends moved the final score. Our own best model, a CoAtNet-2 trained on labels we extracted from the radiology reports,
 scored **0.916** alone; the 0.958 came from blending into the public model stack. The full story, with every
 architecture tried and every mistake we made, is in **[docs/REPORT.md](docs/REPORT.md)**.
 
@@ -51,6 +51,8 @@ Everything is on Hugging Face:
 | Checksums for every file | `SHA256SUMS` |
 
 The final submission notebook is built by `scripts/submission/build_r7.py` from public notebooks.
+Every Kaggle notebook we ran is public; the index is in [docs/KAGGLE_NOTEBOOKS.md](docs/KAGGLE_NOTEBOOKS.md).
+Day-by-day working notes from the last week are in [docs/state_notes/](docs/state_notes/).
 
 ## How it works
 

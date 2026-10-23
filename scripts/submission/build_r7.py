@@ -5,18 +5,26 @@ and run in their own namespace, with their own temp dir and output names, so the
 globals or files. Any R7 failure, a late start, or under 90 % coverage leaves the blend exactly as
 the plain fork.
 
-usage: build_r7.py <out_dir> <slug>
+usage: build_r7.py <out_dir> <slug> [--fork NB] [--a-r7 0.4] [--a224 0.35] [--w-raptor 0.5]
 """
-import copy
+import argparse
 import json
-import sys
 from pathlib import Path
 
-FORK = Path(r"D:\kaggle_c\fork958\stage_rsna-knee-fork-958-r6\rsna-knee-fork-958-r6.ipynb")
+ap = argparse.ArgumentParser()
+ap.add_argument("out_dir")
+ap.add_argument("slug")
+ap.add_argument("--fork", default=r"D:\kaggle_c\fork958\stage_rsna-knee-fork-958-r6\rsna-knee-fork-958-r6.ipynb",
+                help="base notebook: the plain fork, or a fork that already carries our arm")
+ap.add_argument("--a-r7", type=float, default=0.4)
+ap.add_argument("--a224", type=float, default=0.35, help="share of the Raptor slot given to the 224 model")
+ap.add_argument("--w-raptor", type=float, default=0.5, help="Raptor weight for findings without a per-finding one")
+args = ap.parse_args()
+FORK = Path(args.fork)
 R7NB = Path(r"D:\kaggle_c\pub_scan\r7\0-957-latest-dataset-score-in-one-click.ipynb")
-out_dir, slug = Path(sys.argv[1]), sys.argv[2]
+out_dir, slug = Path(args.out_dir), args.slug
 
-A_R7 = 0.4               # share of the compact slot given to R7 (goodpjw2008 version 26)
+A_R7 = args.a_r7         # share of the compact slot given to R7 (goodpjw2008 version 26: 0.4)
 R7_START_LIMIT_H = 5.5   # do not start R7 later than this after the notebook start
 R7_DEADLINE_H = 7.0      # R7's workers stop by then, leaving 2 h for Part B and the 9 h limit
 R7_MIN_COVER = 0.90      # below this R7 is dropped rather than mixed into part of the rows
@@ -132,6 +140,10 @@ b = sub1(b, "    if r224 is not None:   # [s5]", '''    if r7 is not None:   # [
 b = sub1(b, "         'rank_basis': 'each model over its own non-failed rows'}",
          "         'rank_basis': 'each model over its own non-failed rows',\n"
          "         'r7_used': r7 is not None, 'r7_share': A_R7, 'r7_failed': int(r7_fail.sum())}   # [r7]")
+if args.a224 != 0.35:
+    b = sub1(b, "A224 = 0.35   #", f"A224 = {args.a224}   # [probe] was 0.35;")
+if args.w_raptor != 0.5:
+    b = sub1(b, "W_RAPTOR, W_OURS = 0.5, 0.5", f"W_RAPTOR, W_OURS = {args.w_raptor}, {round(1 - args.w_raptor, 4)}   # [probe] was 0.5, 0.5")
 cells[i_blend] = code(b)
 
 cells[i_r6run + 1:i_r6run + 1] = new

@@ -65,6 +65,11 @@ bad = re.findall(r"R7_(?:FAILED|SKIPPED|DROPPED|UNUSABLE)|BLEND_FALLBACK", txt)
 print(f"audit: r7_stage_ok={r7_ok} r7_used={r7_used} bad={bad}", flush=True)
 if not (r7_ok and r7_used) or bad or "NOTEBOOK_COMPLETE" not in txt:
     raise SystemExit("audit failed -- not submitting")
+if len(sys.argv) > 3 and sys.argv[3] == "arm":
+    arm_ok = bool(re.search(r"OURARM blended", txt)) and not re.search(r"OURARM family \S+ FAILED", txt)
+    print(f"audit: arm blended={arm_ok}", flush=True)
+    if not arm_ok:
+        raise SystemExit("audit failed (arm) -- not submitting")
 
 print(f"submitting {REF} v{VER}: {MSG}", flush=True)
 retry(lambda: a.competition_submit_code("submission.csv", MSG, COMP, kernel=REF,
